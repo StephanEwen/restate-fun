@@ -1,0 +1,21 @@
+{
+  "name": "restate-comfy-runtime-example",
+  "version": "0.0.1",
+  "description": "An example using Restate to orchestrate workflow workers",
+  "main": "app.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc --noEmitOnError",
+    "start": "node ./dist/app.js",
+    "dev": "tsx watch ./src/app.ts"
+  },
+  "dependencies": {
+    "@restatedev/restate-sdk": "^1.7.2",
+    "@restatedev/restate-sdk-zod": "^1.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5"
+  }
+}
