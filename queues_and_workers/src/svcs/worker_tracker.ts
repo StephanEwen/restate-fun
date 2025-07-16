@@ -213,7 +213,7 @@ async function initiateNextTask(ctx: restate.ObjectContext<WorkerState>): Promis
     ctx.set("taskInProgress", nextTask);
     
     // notify worker process
-    ctx.run("sending work to worker", () => {
+    await ctx.run("sending work to worker", () => {
             console.log("send task to process: " + JSON.stringify(nextTask));
                 // the task process should eventually call taskComplete
         },
