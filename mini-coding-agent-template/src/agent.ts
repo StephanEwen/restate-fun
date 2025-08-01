@@ -1,19 +1,24 @@
 import * as restate from "@restatedev/restate-sdk"
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
+import { type AgentTask, type Entry, type ContextArtifact } from "./types";
+import { AgentExecutor } from "./agent_executor";
 
+// aliases / shortcuts
 const handler = restate.handlers.object.exclusive;
 const shared = restate.handlers.object.shared;
+const binarySerDe = restate.serde.binary;
+const opts = restate.rpc.sendOpts;
 
-type Entry = {
-    role: "agent" | "user",
-    message: string
-}
+type Artifacts = {
+    [key: `a_${string}`]: ContextArtifact;
+};
 
-type State = {
+type State = Artifacts & {
     messages: Entry[],
-    currentTaskId: string | null,
-}
+    currentTaskId: string | null
+    // more to come
+} 
 
 export const agent = restate.object({
     name: "agent",
@@ -29,7 +34,6 @@ export const agent = restate.object({
                 output: serde.zod(z.void())
             },
             async (restate: restate.ObjectContext<State>, message) => {
-
                 // store message
                 const messages = (await restate.get("messages")) ?? [];
                 messages.push({ role: "user", message });
@@ -42,7 +46,26 @@ export const agent = restate.object({
                     restate.clear("currentTaskId");
                 }
 
-                // assemble a task and send it off
+                const task: AgentTask = {
+                    agentId: restate.key,
+                    prompt: message,
+                    context: messages,
+                    maxIterations: 10
+                }
+
+                const handle = restate
+                    .serviceSendClient<AgentExecutor>({ name: "agent_executor" })
+                    .runTask(task, opts({
+                          // we need an idempotency key to attach to invocations
+                          // this is a deterministic random
+                          idempotencyKey: restate.rand.uuidv4(),
+                        })
+                      );
+                
+                const invocationId = await handle.invocationId;
+                restate.set("currentTaskId", invocationId)
+
+                // TODO, possible schedule a timer to cancel the task if it takes too long?
             }
         ),
 
@@ -73,20 +96,35 @@ export const agent = restate.object({
             }
         ),
 
-        addArtifactFromRun: handler(
+        addUpdate: handler(
             {
-                input: restate.serde.binary,
-                output: serde.zod(z.void()),
                 ingressPrivate: true // not part of public API
             },
-            async (restate: restate.ObjectContext<State>, artifact) => {
+            async (restate: restate.ObjectContext<State>, req: { taskId: string, message: string, artifactRef?: string }) => {
+                const { taskId, message, artifactRef } = req;
 
+                // we double check that this was not received just the moment sent a
+                // cancellation and has been subsumed by a new task
+                const ongoingTask = await restate.get("currentTaskId");
+                if (ongoingTask !== taskId) {
+                    return;
+                }
+
+                // store message
+                const messages = (await restate.get("messages")) ?? [];
+                messages.push({ role: "user", message, artifactRef });
+                restate.set("messages", messages);
             }
         ),
 
         getMessages: shared(
-            async (restate: restate.ObjectSharedContext<State>) => {
-                return (await restate.get("messages")) ?? [];
+            {
+                input: serde.zod(z.undefined()),
+                output: binarySerDe
+            },
+            async (restate: restate.ObjectSharedContext) => {
+                // we just pass the bytes back, no need to parse JSON and the re-encode JSON
+                return await restate.get("messages", binarySerDe);
             }
         )
     },
@@ -114,11 +152,16 @@ async function cancelTask(
     try {
         await donePromise.orTimeout(timeout);
     } catch (e) {
-        if (!(e instanceof restate.TimeoutError)) {
-            throw e;
+        if (e instanceof restate.TerminalError && e.code === 409) {
+            // cancelled
+            return
+        }
+        if (e instanceof restate.TimeoutError) {
+            // did not complete in time, we keep it running, it will still do its cleanup
+            ctx.console.warn(`Cancelled agent task taking longer to complete than ${JSON.stringify(timeout)}`)
+            return;
         }
 
-        // did not complete in time, we keep it running, it will still do its cleanup
-        ctx.console.warn(`Cancelled agent task taking longer to complete than ${JSON.stringify(timeout)}`)
+        throw e;
     }
 }

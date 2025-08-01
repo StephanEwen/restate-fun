@@ -6,17 +6,18 @@ import { AgentTask } from "./types";
 
 const handler = restate.handlers.handler;
 
-export const agentWorkExecutor = restate.service({
+export const agentExecutor = restate.service({
     name: "agent_executor",
     handlers: {
         runTask: handler(
             {
                 input: serde.zod(AgentTask),
-                output: serde.zod(z.string()),
+                output: serde.zod(z.void()),
                 journalRetention: { days: 1 }
             },
             async (restate: restate.Context, task) => {
 
+                const taskId = restate.request().id; // this is to let the agent know who sends the request
                 const agent = restate.objectSendClient<Agent>({ name: "agent" }, task.agentId);
 
                 for (let iteration = 0; iteration < task.maxIterations; iteration++) {
@@ -24,12 +25,16 @@ export const agentWorkExecutor = restate.service({
 
                     await restate.sleep(10_000);
 
+                    agent.addUpdate({taskId, message: `update ${iteration}`});
+
                     if (toolCalls === 0) {
-                        return "done";
+                        agent.taskComplete({ taskId, message: "I finished the task" });
+                        return;
                     }
                 }
 
-                return `The task exceeded the maximum number of iterations ${task.maxIterations}`;
+                // this should result in a failure notification, TODO
+
             }
         )
     },
@@ -39,4 +44,4 @@ export const agentWorkExecutor = restate.service({
 
 })
 
-export type AgentWorkExecutor = typeof agentWorkExecutor;
+export type AgentExecutor = typeof agentExecutor;
