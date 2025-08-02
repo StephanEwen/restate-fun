@@ -1,8 +1,9 @@
 import * as restate from "@restatedev/restate-sdk"
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
-import { type AgentTask, type Entry, type ContextArtifact } from "./types";
+import { Entry, type AgentTask, type ContextArtifact } from "./types";
 import { AgentExecutor } from "./agent_executor";
+import { jsonPassThroughSerde } from "./utils";
 
 // aliases / shortcuts
 const handler = restate.handlers.object.exclusive;
@@ -16,7 +17,7 @@ type Artifacts = {
 
 type State = Artifacts & {
     messages: Entry[],
-    currentTaskId: string | null
+    currentTaskId: restate.InvocationId | null
     // more to come
 } 
 
@@ -25,13 +26,14 @@ export const agent = restate.object({
     handlers: {
 
         /**
-         * Handler for all user messages (prompts, GitHub webhooks)
+         * Handler for all messages (user prompts, GitHub webhooks)
          * Could also have specialized handlers for different types of input.
          */
-        handleUserMessage: handler(
+        newMessage: handler(
             {
+                journalRetention: { days: 1 },
                 input: serde.zod(z.string()),
-                output: serde.zod(z.void())
+                output: serde.zod(z.void()),
             },
             async (restate: restate.ObjectContext<State>, message) => {
                 // store message
@@ -55,12 +57,9 @@ export const agent = restate.object({
 
                 const handle = restate
                     .serviceSendClient<AgentExecutor>({ name: "agent_executor" })
-                    .runTask(task, opts({
-                          // we need an idempotency key to attach to invocations
-                          // this is a deterministic random
-                          idempotencyKey: restate.rand.uuidv4(),
-                        })
-                      );
+                    .runTask(task, opts( { idempotencyKey: restate.rand.uuidv4() }));
+                    // note that the idempotency key is not actually needed for idmepotency, but it is a
+                    // current limitation that re-attaching to handlers only works when an idempotency key is present
                 
                 const invocationId = await handle.invocationId;
                 restate.set("currentTaskId", invocationId)
@@ -98,13 +97,14 @@ export const agent = restate.object({
 
         addUpdate: handler(
             {
-                ingressPrivate: true // not part of public API
+                input: serde.zod(z.object({ taskId: z.string(), entry: Entry })),
+                ingressPrivate: true, // not part of public API
+                journalRetention: { days: 0 } // no need to keep a history of this handler
             },
-            async (restate: restate.ObjectContext<State>, req: { taskId: string, message: string, artifactRef?: string }) => {
-                const { taskId, message, artifactRef } = req;
+            async (restate: restate.ObjectContext<State>, { taskId, entry }) => {
 
-                // we double check that this was not received just the moment sent a
-                // cancellation and has been subsumed by a new task
+                // we double check that this was not a message enqueued by a handler that
+                // has since been cancelled
                 const ongoingTask = await restate.get("currentTaskId");
                 if (ongoingTask !== taskId) {
                     return;
@@ -112,15 +112,16 @@ export const agent = restate.object({
 
                 // store message
                 const messages = (await restate.get("messages")) ?? [];
-                messages.push({ role: "user", message, artifactRef });
+                messages.push(entry);
                 restate.set("messages", messages);
             }
         ),
 
         getMessages: shared(
             {
-                input: serde.zod(z.undefined()),
-                output: binarySerDe
+                input: restate.serde.empty,
+                output: jsonPassThroughSerde, // pass binary through, but declare as JSON
+                journalRetention: { days: 0 } // no need to keep a history of this handler
             },
             async (restate: restate.ObjectSharedContext) => {
                 // we just pass the bytes back, no need to parse JSON and the re-encode JSON
@@ -129,8 +130,9 @@ export const agent = restate.object({
         )
     },
     options: {
-        journalRetention: { days: 7 },
-        idempotencyRetention: { days: 7 },
+        // default retention, unless overridden at the handler level
+        journalRetention: { days: 1 },
+        idempotencyRetention: { days: 1 },
     }
 })
 
@@ -140,15 +142,14 @@ export type Agent = typeof agent;
 
 async function cancelTask(
         ctx: restate.Context,
-        invocationId: string,
+        invocationId: restate.InvocationId,
         timeout: restate.Duration) {
-    const handle = restate.InvocationIdParser.fromString(invocationId);
 
     // cancel ongoing invocation
-    ctx.cancel(handle);
+    ctx.cancel(invocationId);
 
     // wait for it to gracefully complete for a bit
-    const donePromise = ctx.attach(handle);
+    const donePromise = ctx.attach(invocationId);
     try {
         await donePromise.orTimeout(timeout);
     } catch (e) {
