@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        form {
+            margin-bottom: 20px;
+        }
+
+        input[type="text"] {
+            padding: 10px;
+            width: 300px;
+            margin-right: 10px;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        div {
+            margin: 5px 0;
+        }
+
+        textarea {
+            width: 100vw;
+            height: 100vh;
+            box-sizing: border-box;
+            min-height: 100vh;
+            overflow-y: scroll;
+        }
+    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+
+<body>
+    <h1>Example</h1>
+    <script>
+        function subscribe() {
+
+            const prompt = document.getElementById("prompt").value;
+            const agentId = document.getElementById("agentId").value;
+
+            fetch("http://localhost:8080/agent/" + agentId + "/newMessage", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(prompt),
+            }).catch((error) => {
+                console.error("Error:", error);
+            });
+
+            const textarea = document.getElementById("message");
+
+            const eventSource = new EventSource("/subscribe/" + agentId);
+
+            eventSource.onmessage = function (event) {
+                const data = JSON.parse(event.data);
+                const content = textarea.value;
+                textarea.value = content ? content + " " + data.message : data.message;
+                console.log(data);
+            };
+        }
+
+    </script>
+    <form onsubmit="event.preventDefault();">
+        <h2>Who are you</h2>
+        <input type="text" id="agentId" placeholder="bob" required>
+        <h2>How can I help you?</h2>
+        <input type="text" id="prompt"
+            placeholder="Build me a factorial function in Typescript without using recursion or loop." required>
+        <button onclick="subscribe()">Subscribe</button>
+        <hr>
+        <textarea id="message" placeholder=""></textarea>
+    </form>
+</body>
+</html>
