@@ -23,3 +23,13 @@ export const ContextArtifact = z.object({
     reference: z.string().optional()
 })
 export type ContextArtifact = z.infer<typeof ContextArtifact>
+
+export const PlanStep = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(["pending", "running", "completed", "error"]),
+  description: z.string(),
+  prompt: z.string(),
+});
+
+export type PlanStep = z.infer<typeof PlanStep>;

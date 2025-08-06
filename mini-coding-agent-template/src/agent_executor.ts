@@ -3,55 +3,11 @@ import { TerminalError } from "@restatedev/restate-sdk";
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
-import { AgentTask, Entry } from "./types";
-import { streamText, wrapLanguageModel } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { AgentTask, Entry  } from "./types";
 import assert from "node:assert";
+import { preparePlan, executePlanStep } from "./llms";
 
 const handler = restate.handlers.handler;
-
-function createPrompt(task: AgentTask): string {
-  return `You are executing a task. Please provide updates on the task progress.
-          The following is the task description: ${task.prompt}\n
-          With the following context: ${task.context
-            .map((c) => c.message)
-            .join("\n")}\n
-            
-            Please provide updates in the form of a string. If the task is complete, return "finished".
-            `;
-} 
-
-async function llmStep(taskId: string, task: AgentTask, abortSignal: any): Promise<string[]> {
-  console.log(`
-    Executing LLM step for: ${task.agentId} with the task ID: ${taskId}
-
-    🤖 follow the updates at:
-      curl http://localhost:3000/subscribe/${task.agentId}
-    `);
-
-  const { textStream } = streamText({
-    model: openai("gpt-4o", { structuredOutputs: true }),
-    system: "You are a helpful assistant.",
-    prompt: createPrompt(task),
-    abortSignal,
-  });
-  const stepMessages = [];
-
-  for await (const textPart of textStream) {
-    stepMessages.push(textPart);
-
-    // also, send the updates to any client that is listening
-    await fetch(`http://localhost:3000/publish/${task.agentId}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ message: textPart, taskId }),
-      signal: abortSignal,
-    });
-  }
-  return stepMessages;
-}
 
 export const agentExecutor = restate.service({
   name: "agent_executor",
@@ -74,43 +30,72 @@ export const agentExecutor = restate.service({
           task.agentId
         );
 
-        let messages: string[] = [];
-        try {
-          // Make an LLM call to start the task execution.
-          // The LLM will stream updates off-band, so that the user can see the progress.
-          // Once the LLM is done, we can send to the agent
-          // to decide on the next steps.
-          messages = await restate.run(
-            "call an LLM step",
-            () => llmStep(taskId, task, abortSignal),
-            {
-              maxRetryAttempts: 3,
-            }
-          );
-        } catch (e) {
-          // the LLM call failed, we can notify the agent.
-          assert(e instanceof TerminalError);
-          // if the error is a terminal error, we can let the agent know
-          agent.taskFailed({
-            taskId,
-            message: `Task failed with terminal error: ${e.message}`,
-          });
-          throw e;
-        }
+        // let's first compute a plan for the task
+        const plan = await restate.run(
+          "compute a plan",
+          () => preparePlan({ task, abortSignal }),
+          { maxRetryAttempts: 3 }
+        );
+        
+        // notify the agent that we have a plan
+        const newEntries: Entry[] = plan.map((step) => ({
+          role: "agent",
+          message: `Step ${step.id}: ${step.title} - ${step.description}`,
+        }));
 
-        // send the updates to the agent
         agent.addUpdate({
           taskId,
-          entries: messages.map((message) => ({ role: "agent", message })),
+          entries: newEntries,
         });
 
-        if (
-          messages.length > 0 &&
-          messages[messages.length - 1] === "finished"
-        ) {
-          // if the last message is "finished", we can let the agent know
-          agent.taskComplete({ taskId, message: "finished" });
+        // handle the plan steps
+        for (const step of plan) {
+          agent.addUpdate({
+            taskId,
+            entries: [
+              { role: "agent", message: `Executing step ${step.id}: ${step.title}` },
+            ],
+          });
+          
+          // here is the place where we can setup various resources 
+          // like an S3 bucket, a database, etc'.
+          // we can make sure that they are cleaned up after the task is done.
+          // In this demo we don't use any resources, but you can imagine that this is where
+          // we can compute stable names that will persist across retries.
+          // and ephemeral names like a staging area.
+
+          let messages: string[] = [];
+          try {
+            // Make an LLM call to start the task execution.
+            // The LLM will stream updates off-band, so that the user can see the progress.
+            // Once the LLM is done, we can send to the agent
+            // to decide on the next steps.
+            messages = await restate.run(
+              "call an LLM step",
+              () => executePlanStep(taskId, task, step, abortSignal),
+              {
+                maxRetryAttempts: 2,
+              }
+            );
+          } catch (e) {
+            // the LLM call failed, we can notify the agent.
+            assert(e instanceof TerminalError);
+            // if the error is a terminal error, we can let the agent know
+            agent.taskFailed({
+              taskId,
+              message: `Task failed at step ${step.id}: ${e.message}`,
+            });
+            throw e;
+          }
+
+          // send the updates to the agent
+          agent.addUpdate({
+            taskId,
+            entries: messages.map((message) => ({ role: "agent", message })),
+          });
         }
+        // we are done
+        agent.taskComplete({ taskId, message: "finished" });
       }
     ),
   },
