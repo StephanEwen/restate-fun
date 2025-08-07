@@ -1,36 +1,20 @@
+import {type Context}  from "@restatedev/restate-sdk";
+
 import { CoreMessage, generateObject, streamText } from "ai";
-import { AgentTask, PlanStep } from "./types";
+import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
-import {z} from "zod";
-
-export type StepInput = {
-  taskId: string;
-  stepId: string;
-  sandboxId: string;
-  task: AgentTask;
-  step: PlanStep;
-  s3prefix: string;
-  sandboxUrl: string;
-  planetScaleUrl: string;
-  tempDirectory: string;
-  topic: string;
-};
-
-export type StepResult = {
-  stepId: string;
-  messages: CoreMessage[];
-};
+import { z } from "zod";
 
 
 /**
  * Deconstructs a task into a plan of steps.
  * This function prepares a plan for executing a coding task by breaking it down into manageable steps.
  * Each step includes a description, a prompt for the LLM, and a status indicating its
- *  
+ *
  * @param params - The parameters for preparing a plan.
  * @param params.task - The task for which to prepare the plan.
  * @param params.abortSignal - The signal to abort the operation if needed.
- * @returns A promise that resolves to an array of PlanStep objects representing the plan for the task. 
+ * @returns A promise that resolves to an array of PlanStep objects representing the plan for the task.
  */
 export async function preparePlan(params: {
   task: AgentTask;
@@ -45,55 +29,76 @@ export async function preparePlan(params: {
     Do not generate more than 5 steps at once.
     Each step starts as pending.
     `;
-  
-    const messages: CoreMessage[] = [];
-    messages.push({
-      role: "system",
-      content: system,
-    });
-    for (const entry of task.context) {
-      if (entry.role === "user") {
-        messages.push({
-          role: "user",
-          content: entry.message,
-        });
-      } else {
-        messages.push({
-          role: "assistant",
-          content: entry.message,
-        });
-      }
+
+  const messages: CoreMessage[] = [];
+  messages.push({
+    role: "system",
+    content: system,
+  });
+  for (const entry of task.context) {
+    if (entry.role === "user") {
+      messages.push({
+        role: "user",
+        content: entry.message,
+      });
+    } else {
+      messages.push({
+        role: "assistant",
+        content: entry.message,
+      });
     }
+  }
 
-    // Call the LLM to generate a plan
-    const { object: plan } = await generateObject({
-      model: openai("gpt-4o", { structuredOutputs: true }),
-      schema: z.object({
-        steps: z.array(PlanStep),
-      }),
-      abortSignal,
-      messages,
-    });
+  // Call the LLM to generate a plan
+  const { object: plan } = await generateObject({
+    model: openai("gpt-4o", { structuredOutputs: true }),
+    schema: z.object({
+      steps: z.array(PlanStep),
+    }),
+    abortSignal,
+    messages,
+  });
 
-    return plan.steps;
+  return plan.steps;
 }
 
-
+// A set of tools that the LLM can use to execute the steps
+const TOOLS = {
+  getFileContent: {
+    parameters: z.object({
+      filePath: z.string(),
+    }),
+    description: "Get the content of a file from the remote environment.",
+  },
+  searchCode: {
+    parameters: z.object({
+      query: z.string(),
+    }),
+    description: "Search for code snippets in the remote environment.",
+  },
+  executeCommand: {
+    parameters: z.object({
+      command: z.string(),
+    }),
+    description: "Execute a command in the remote environment.",
+  },
+};
 
 /**
- * Executes a single step in the plan.
- * This function executes a specific step in the plan by calling the LLM with the step's prompt.
- * And using various tools, like RPC a remote environment to grep, execute tests etc'.
- * In this demo we don't use any tools, but you can imagine that this is where you would integrate them.
+ * Executes a PlanStep.
+ * This function executes a main coding loop, which involves calling the LLM to generate responses or tool calls.
  *
- * @param taskId - The ID of the task being executed.
- * @param task - The task object containing relevant information.
- * @param step - The specific step to execute.
- * @returns A promise that resolves to an array of messages generated during the step execution.
+ * @param restate - The Restate context for service client interactions.
+ * @param params - The parameters for executing the step.
+ * @param params.taskId - The ID of the task being executed.
+ * @param params.task - The task object containing details about the task.
+ * @param params.step - The step to be executed.
+ * @param params.topic - The topic for updates related to this step.
+ * @returns A promise that resolves to a StepResult containing the step ID and messages generated during execution.
  */
-export async function executePlanStep(
+export async function executePlanStepLoop(
+  restate: Context,
   { taskId, task, step, topic }: StepInput,
-  abortSignal: AbortSignal
 ): Promise<StepResult> {
   console.log(`
     Executing LLM step for: ${task.agentId} with the task ID: ${taskId}
@@ -105,68 +110,150 @@ export async function executePlanStep(
     🤖 follow the updates at:
       curl http://localhost:3000/subscribe/${task.agentId}
     `);
+    
+  const abortSignal = restate.request().attemptCompletedSignal;
 
-  const { textStream } = streamText({
-    model: openai("gpt-4o-mini", { structuredOutputs: true }),
-    system: "You are a helpful assistant.",
-    prompt: step.prompt,
-    abortSignal,
-  });
+  const history: CoreMessage[] = [
+    {
+      role: "system",
+      content: `You are an AI assistant that executes a coding task step.
+        The step is: ${step.title}
+        The step description is: ${step.description}
+        The step prompt is: ${step.prompt}
+        You will receive updates from the agent about the task progress.
+        Please execute the step and provide the results.
+        If you need to call tools, use the provided tools.`,
+    },
+    {
+      role: "user",
+      content: task.prompt,
+    },
+  ];
 
-  const texts: string[] = [];
-  
- // chunk encoding upload the stream to a topic
- 
-  for await (const textPart of textStream) {
-    // chunk encoding upload the stream to a topic
-    await fetch(`http://localhost:3000/publish/${task.agentId}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        taskId,
-        stepId: step.id,
-        message: textPart,
-        topic,
-      }),
-      signal: abortSignal,
-    });
-    texts.push(textPart);
+  for (let i = 0; i < 5; i++) {
+    //
+    // Call the LLM to generate a response or tool calls
+    //
+    const {
+      calls,
+      messages: newMessage,
+      finished,
+    } = await restate.run(
+      `execute ${step.title} iteration ${i + 1}`,
+      async () => {
+        const { textStream, toolCalls, text, response, finishReason } =
+          streamText({
+            model: openai("gpt-4o-mini", { structuredOutputs: true }),
+            messages: history,
+            abortSignal,
+            tools: TOOLS,
+          });
+
+        // Stream the text the user
+        for await (const textPart of textStream) {
+          await fetch(`http://localhost:3000/publish/${task.agentId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              taskId,
+              stepId: step.id,
+              message: textPart,
+              topic,
+            }),
+            signal: abortSignal,
+          });
+        }
+
+        const { messages } = await response;
+        const calls = await toolCalls;
+        const buffer = await text;
+        const finished = await finishReason;
+
+        return {
+          finished,
+          calls,
+          messages, // <-- this might be large, and if we want we can store this offband, for example in S3, and provide a link to it instead.
+        };
+      }
+    );
+
+    history.push(...newMessage);
+
+    if (finished === "stop") {
+      console.log("LLM finished generating response, exiting loop.");
+      break;
+    }
+
+    //
+    // now we can process the tool calls
+    //
+    for (const call of calls) {
+      if (call.toolName === "searchCode") {
+        const { query } = call.args;
+        // Here you would implement the logic to search for code snippets in the remote environment
+
+        console.log(`Searching for code snippets with query: ${query}`);
+
+        history.push({
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result: `Found code snippets for query: ${query}`,
+            },
+          ],
+        });
+      } else if (call.toolName === "getFileContent") {
+        const { filePath } = call.args;
+        // Here you would implement the logic to fetch the file content from the remote environment
+        // For example, you might use an RPC call to a remote service that retrieves the file content.
+        history.push({
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result: `Found file content for path: ${filePath}`,
+            },
+          ],
+        });
+        console.log(`Fetching file content for path: ${filePath}`);
+      } else if (call.toolName === "executeCommand") {
+        const { command } = call.args;
+        // Here you would implement the logic to execute a command in the remote environment
+        // For example, you might use an RPC call to a remote service that executes the command.
+        // sandboxClient.execute({
+        //   sandboxId: step.sandboxId,
+        //   code: step.code,
+        // });
+        //
+        history.push({
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result: `Executed command: ${command}`,
+            },
+          ],
+        });
+        console.log(`Executing command: ${command}`);
+      }
+    }
   }
 
-  // imagine doing something with the conversation, like uploading it to S3
-
-  // For example:
-  // await uploadToS3({
-  //   Bucket: "my-bucket",
-  //   Key: `conversations/${taskId}/${step.id}.json`,
-  //   Body: JSON.stringify({
-  //     taskId,
-  //     stepId: step.id,
-  //     messages: texts,
-  //   }),
-  // });
-
-  // and coordinating tool execution, like running tests, or executing code in a sandboxed environment.
-  // sandboxClient.execute({
-  //   sandboxId: step.sandboxId,
-  //   code: step.code,
-  // });
-  //
-  // and coordinating tool execution, like running tests, or executing code in a sandboxed environment.
-  // await runTestsInSandbox({
-  //   sandboxId: step.sandboxId,
-  //   code: texts.join("\n"),
-  // });
-  //
-  //
   return {
     stepId: step.id,
     messages: [
       {
         role: "assistant",
-        content: texts.join("\n"),
+        content: "<response>",
       },
     ],
   };

@@ -1,3 +1,4 @@
+import { CoreMessage } from "ai";
 import { z } from "zod";
 
 
@@ -33,3 +34,21 @@ export const PlanStep = z.object({
 });
 
 export type PlanStep = z.infer<typeof PlanStep>;
+
+export type StepInput = {
+  taskId: string;
+  stepId: string;
+  sandboxId: string;
+  task: AgentTask;
+  step: PlanStep;
+  s3prefix: string;
+  sandboxUrl: string;
+  planetScaleUrl: string;
+  tempDirectory: string;
+  topic: string;
+};
+
+export type StepResult = {
+  stepId: string;
+  messages: CoreMessage[];
+};
