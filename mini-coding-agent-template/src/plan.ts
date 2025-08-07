@@ -1,10 +1,36 @@
-import {type Context}  from "@restatedev/restate-sdk";
+import { type Context } from "@restatedev/restate-sdk";
 
-import { CoreMessage, generateObject, streamText } from "ai";
+import {
+  CoreMessage,
+  generateObject,
+  streamText,
+  ToolResultPart,
+} from "ai";
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
+// A set of tools that the LLM can use to execute the steps
+const TOOLS = {
+  getFileContent: {
+    parameters: z.object({
+      filePath: z.string(),
+    }),
+    description: "Get the content of a file from the remote environment.",
+  },
+  searchCode: {
+    parameters: z.object({
+      query: z.string(),
+    }),
+    description: "Search for code snippets in the remote environment.",
+  },
+  executeCommand: {
+    parameters: z.object({
+      command: z.string(),
+    }),
+    description: "Execute a command in the remote environment.",
+  },
+};
 
 /**
  * Deconstructs a task into a plan of steps.
@@ -62,27 +88,6 @@ export async function preparePlan(params: {
   return plan.steps;
 }
 
-// A set of tools that the LLM can use to execute the steps
-const TOOLS = {
-  getFileContent: {
-    parameters: z.object({
-      filePath: z.string(),
-    }),
-    description: "Get the content of a file from the remote environment.",
-  },
-  searchCode: {
-    parameters: z.object({
-      query: z.string(),
-    }),
-    description: "Search for code snippets in the remote environment.",
-  },
-  executeCommand: {
-    parameters: z.object({
-      command: z.string(),
-    }),
-    description: "Execute a command in the remote environment.",
-  },
-};
 
 /**
  * Executes a PlanStep.
@@ -96,9 +101,9 @@ const TOOLS = {
  * @param params.topic - The topic for updates related to this step.
  * @returns A promise that resolves to a StepResult containing the step ID and messages generated during execution.
  */
-export async function executePlanStepLoop(
+export async function loopAgent(
   restate: Context,
-  { taskId, task, step, topic }: StepInput,
+  { taskId, task, step, topic }: StepInput
 ): Promise<StepResult> {
   console.log(`
     Executing LLM step for: ${task.agentId} with the task ID: ${taskId}
@@ -110,8 +115,11 @@ export async function executePlanStepLoop(
     🤖 follow the updates at:
       curl http://localhost:3000/subscribe/${task.agentId}
     `);
-    
+
   const abortSignal = restate.request().attemptCompletedSignal;
+
+  // we always start with an empty history
+  // and we will append messages to it as we go
 
   const history: CoreMessage[] = [
     {
@@ -130,120 +138,85 @@ export async function executePlanStepLoop(
     },
   ];
 
-  for (let i = 0; i < 5; i++) {
-    //
-    // Call the LLM to generate a response or tool calls
-    //
-    const {
-      calls,
-      messages: newMessage,
-      finished,
-    } = await restate.run(
+
+  for (let i = 0; i < 7; i++) {
+    // -----------------------------------------------------
+    // 1. Call the LLM to generate a response or tool calls
+    // -----------------------------------------------------
+
+    const { calls, messages, finished } = await restate.run(
       `execute ${step.title} iteration ${i + 1}`,
-      async () => {
-        const { textStream, toolCalls, text, response, finishReason } =
-          streamText({
-            model: openai("gpt-4o-mini", { structuredOutputs: true }),
-            messages: history,
-            abortSignal,
-            tools: TOOLS,
-          });
-
-        // Stream the text the user
-        for await (const textPart of textStream) {
-          await fetch(`http://localhost:3000/publish/${task.agentId}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              taskId,
-              stepId: step.id,
-              message: textPart,
-              topic,
-            }),
-            signal: abortSignal,
-          });
-        }
-
-        const { messages } = await response;
-        const calls = await toolCalls;
-        const buffer = await text;
-        const finished = await finishReason;
-
-        return {
-          finished,
-          calls,
-          messages, // <-- this might be large, and if we want we can store this offband, for example in S3, and provide a link to it instead.
-        };
-      }
+      () => streamModel(abortSignal, history, step, taskId, topic),
+      { maxRetryAttempts: 3 }
     );
 
-    history.push(...newMessage);
+    history.push(...messages);
 
     if (finished === "stop") {
       console.log("LLM finished generating response, exiting loop.");
-      break;
+      const content = lastMessageContent(messages);
+
+      return {
+        stepId: step.id,
+        messages: [
+          {
+            role: "assistant",
+            content,
+          },
+        ],
+      };
     }
 
-    //
-    // now we can process the tool calls
-    //
+    // -----------------------------------------------------
+    // 2. Process the actual tool calls
+    // -----------------------------------------------------
+
     for (const call of calls) {
       if (call.toolName === "searchCode") {
         const { query } = call.args;
-        // Here you would implement the logic to search for code snippets in the remote environment
-
-        console.log(`Searching for code snippets with query: ${query}`);
-
+        const result = await restate.run("code search", () =>
+          executeCodeSearch(query)
+        );
+        const content: ToolResultPart = {
+          type: "tool-result",
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          result,
+        };
         history.push({
           role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              result: `Found code snippets for query: ${query}`,
-            },
-          ],
+          content: [content],
         });
       } else if (call.toolName === "getFileContent") {
         const { filePath } = call.args;
-        // Here you would implement the logic to fetch the file content from the remote environment
-        // For example, you might use an RPC call to a remote service that retrieves the file content.
+        const result = await restate.run("get file content", () =>
+          getFileContent(filePath)
+        );
+        const content: ToolResultPart = {
+          type: "tool-result",
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          result,
+        };
         history.push({
           role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              result: `Found file content for path: ${filePath}`,
-            },
-          ],
+          content: [content],
         });
-        console.log(`Fetching file content for path: ${filePath}`);
       } else if (call.toolName === "executeCommand") {
         const { command } = call.args;
-        // Here you would implement the logic to execute a command in the remote environment
-        // For example, you might use an RPC call to a remote service that executes the command.
-        // sandboxClient.execute({
-        //   sandboxId: step.sandboxId,
-        //   code: step.code,
-        // });
-        //
+        const result = await restate.run("execute command", () =>
+          executeCommand(command)
+        );
+        const content: ToolResultPart = {
+          type: "tool-result",
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          result,
+        };
         history.push({
           role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              result: `Executed command: ${command}`,
-            },
-          ],
+          content: [content],
         });
-        console.log(`Executing command: ${command}`);
       }
     }
   }
@@ -253,8 +226,89 @@ export async function executePlanStepLoop(
     messages: [
       {
         role: "assistant",
-        content: "<response>",
+        content: "<I failed to execute this step>",
       },
     ],
   };
+}
+
+async function streamModel(
+  abortSignal: AbortSignal,
+  history: CoreMessage[],
+  step: PlanStep,
+  taskId: string,
+  topic: string
+) {
+  const { textStream, toolCalls, response, finishReason } = streamText({
+    model: openai("gpt-4o-mini", { structuredOutputs: true }),
+    messages: history,
+    abortSignal,
+    tools: TOOLS,
+  });
+
+  // Stream the text the user
+  for await (const textPart of textStream) {
+    await fetch(`http://localhost:3000/publish/${topic}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        taskId,
+        stepId: step.id,
+        message: textPart,
+        topic,
+      }),
+      signal: abortSignal,
+    });
+  }
+
+  const { messages } = await response;
+  const calls = await toolCalls;
+  const finished = await finishReason;
+
+  return {
+    finished,
+    calls,
+    messages, // <-- this might be large, and if we want we can store this offband, for example in S3, and provide a link to it instead.
+  };
+}
+
+async function executeCodeSearch(query: string): Promise<string> {
+  // Here you would implement the logic to search for code snippets in the remote environment
+  // For example, you might use an RPC call to a remote service that retrieves the code snippets.
+  return `Found code snippets for query: ${query}`;
+}
+
+async function getFileContent(filePath: string): Promise<string> {
+  // Here you would implement the logic to fetch the file content from the remote environment
+  // For example, you might use an RPC call to a remote service that retrieves the file content.
+  return `Content of file at path: ${filePath}`;
+}
+
+async function executeCommand(command: string): Promise<string> {
+  // Here you would implement the logic to execute a command in the remote environment
+  // For example, you might use an RPC call to a remote service that executes the command.
+  return `Executed command: ${command}`;
+}
+
+// Utility function to get the last message content
+// There must be a better way.
+function lastMessageContent(messages: CoreMessage[]): string {
+  if (messages.length === 0) {
+    return "<No messages generated>";
+  }
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage.role !== "assistant") {
+    return "<Last message was not from the assistant>";
+  }
+  if (typeof lastMessage.content === "string") {
+    return lastMessage.content;
+  }
+  if (Array.isArray(lastMessage.content) && lastMessage.content.length > 0) {
+    return lastMessage.content[0].type === "text"
+      ? lastMessage.content[0].text
+      : "<No text in last message>";
+  }
+  return "<Last message content is not text>";
 }

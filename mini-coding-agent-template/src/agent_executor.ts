@@ -4,10 +4,7 @@ import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
 import { AgentTask, StepInput, StepResult } from "./types";
-import {
-  preparePlan,
-  executePlanStepLoop,
-} from "./plan";
+import { preparePlan, loopAgent } from "./plan";
 import { sandbox } from "./sandbox";
 
 export const agentExecutor = restate.service({
@@ -55,7 +52,7 @@ export const agentExecutor = restate.service({
         // here is the place where we can setup various resources
         // like:
         // - an S3 bucket and presigned URLs for storing files,
-        // - a database, 
+        // - a database,
         // - a pubsub topic,
         // - a sandboxed environment.
         // - a browser session.
@@ -67,7 +64,7 @@ export const agentExecutor = restate.service({
         const resourcesToClean = [];
 
         // In this example, we will use a sandbox environment but you can imagine others.
-        
+
         const sandboxClient = restate.serviceClient(sandbox);
         const { sandboxId, sandboxUrl } = await sandboxClient.acquire({
           agentId: task.agentId,
@@ -123,7 +120,6 @@ export const agentExecutor = restate.service({
             resourcesToClean.forEach((fn) => fn());
             throw failure;
           }
-          
           // move on to the next step!
         }
 
@@ -142,7 +138,7 @@ export const agentExecutor = restate.service({
         restate: restate.Context,
         stepInput: StepInput
       ): Promise<StepResult> => {
-        return executePlanStepLoop(restate, stepInput);
+        return loopAgent(restate, stepInput);
       }
     ),
   },
