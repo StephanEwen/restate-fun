@@ -95,7 +95,7 @@ export const agentExecutor = restate.service({
             step,
             sandboxUrl,
             sandboxId,
-            topic: `${task.agentId}:${taskId}:${step.id}`, // <-- topic for step messages
+            topic: `${task.agentId}`, // <-- topic for step messages
             s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
             tempDirectory: `task-${taskId}-step-${step.id}`,
             planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
