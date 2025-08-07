@@ -6,8 +6,6 @@ import { AgentExecutor } from "./agent_executor";
 import { jsonPassThroughSerde } from "./utils";
 
 // aliases / shortcuts
-const handler = restate.handlers.object.exclusive;
-const shared = restate.handlers.object.shared;
 const binarySerDe = restate.serde.binary;
 const opts = restate.rpc.sendOpts;
 
@@ -28,7 +26,7 @@ export const agent = restate.object({
      * Handler for all messages (user prompts, GitHub webhooks)
      * Could also have specialized handlers for different types of input.
      */
-    newMessage: handler(
+    newMessage: restate.createObjectHandler(
       {
         journalRetention: { days: 1 },
         input: serde.zod(z.string()),
@@ -67,7 +65,7 @@ export const agent = restate.object({
       }
     ),
 
-    taskComplete: handler(
+    taskComplete: restate.createObjectHandler(
       {
         // we don't define a schema here, to show you can also use just TS type
         // system, but then you don't get runtime type checking
@@ -97,7 +95,7 @@ export const agent = restate.object({
       }
     ),
 
-    taskFailed: handler(
+    taskFailed: restate.createObjectHandler(
       {
         // we don't define a schema here, to show you can also use just TS type
         // system, but then you don't get runtime type checking
@@ -127,7 +125,7 @@ export const agent = restate.object({
       }
     ),
 
-    addUpdate: handler(
+    addUpdate: restate.createObjectHandler(
       {
         input: serde.zod(
           z.object({ taskId: z.string(), entries: z.array(Entry) })
@@ -150,7 +148,7 @@ export const agent = restate.object({
       }
     ),
 
-    getMessages: shared(
+    getMessages: restate.createObjectSharedHandler(
       {
         input: restate.serde.empty,
         output: jsonPassThroughSerde, // pass binary through, but declare as JSON

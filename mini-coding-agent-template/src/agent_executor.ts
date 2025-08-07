@@ -7,12 +7,10 @@ import { AgentTask  } from "./types";
 import { preparePlan, executePlanStep, StepInput, StepResult } from "./plan";
 import { sandbox } from "./sandbox";
 
-const handler = restate.handlers.handler;
-
 export const agentExecutor = restate.service({
   name: "agent_executor",
   handlers: {
-    runTask: handler(
+    runTask: restate.createServiceHandler(
       {
         input: serde.zod(AgentTask),
         output: serde.zod(z.void()),
@@ -141,7 +139,6 @@ export const agentExecutor = restate.service({
       restate: restate.Context,
       stepInput: StepInput
     ): Promise<StepResult> => {
-
       const abortSignal = restate.request().attemptCompletedSignal;
 
       return await restate.run(

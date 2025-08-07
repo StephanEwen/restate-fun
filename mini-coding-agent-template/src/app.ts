@@ -16,4 +16,5 @@ if (env.OPENAI_API_KEY === undefined) {
 
 serve({
   services: [agent, agentExecutor, sandbox],
+  port: 9080,
 });
