@@ -3,11 +3,9 @@ import { RestatePromise, TerminalError } from "@restatedev/restate-sdk";
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
-import { AgentTask  } from "./types";
+import { AgentTask, StepInput, StepResult } from "./types";
 import {
   preparePlan,
-  StepInput,
-  StepResult,
   executePlanStepLoop,
 } from "./plan";
 import { sandbox } from "./sandbox";
