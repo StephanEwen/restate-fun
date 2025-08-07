@@ -43,9 +43,7 @@ export type StepInput = {
   planetScaleUrl: string;
   tempDirectory: string;
   topic: string;
+  stepResults: string[];
 };
 
-export type StepResult = {
-  stepId: string;
-  messages: CoreMessage[];
-};
+export type StepResult = string; 

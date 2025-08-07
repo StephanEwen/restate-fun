@@ -1,5 +1,5 @@
 import * as restate from "@restatedev/restate-sdk"
-import { RestatePromise, TerminalError } from "@restatedev/restate-sdk";
+import { TerminalError } from "@restatedev/restate-sdk";
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
@@ -73,6 +73,8 @@ export const agentExecutor = restate.service({
         // This is a cleanup saga, we will release all these resources later.
         resourcesToClean.push(() => sandboxClient.release({ sandboxId }));
 
+        const stepResults: string[] = [];
+        
         for (const step of plan) {
           // notify the agent that we are executing the step
           agent.addUpdate({
@@ -97,7 +99,8 @@ export const agentExecutor = restate.service({
             s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
             tempDirectory: `task-${taskId}-step-${step.id}`,
             planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
-          };
+            stepResults, // <-- pass previous step results to the next step
+          } satisfies StepInput;
 
           // actually spawn the step execution
           // we use a service client to call the executePlanStep service handler
@@ -110,7 +113,7 @@ export const agentExecutor = restate.service({
           try {
             // wait for this step to complete
             // If our parent Agent requests a cancelation, the line below will throw a TerminalError
-            await stepPromise;
+            stepResults.push(await stepPromise);
           } catch (error) {
             const failure = error as TerminalError;
             agent.taskFailed({

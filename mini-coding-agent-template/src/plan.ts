@@ -103,7 +103,7 @@ export async function preparePlan(params: {
  */
 export async function loopAgent(
   restate: Context,
-  { taskId, task, step, topic }: StepInput
+  { taskId, task, step, topic, stepResults }: StepInput
 ): Promise<StepResult> {
   console.log(`
     Executing LLM step for: ${task.agentId} with the task ID: ${taskId}
@@ -130,7 +130,10 @@ export async function loopAgent(
         The step prompt is: ${step.prompt}
         You will receive updates from the agent about the task progress.
         Please execute the step and provide the results.
-        If you need to call tools, use the provided tools.`,
+        If you need to call tools, use the provided tools.
+        The following are the results of the previous steps:
+        ${stepResults.join("\n")}
+        `,
     },
     {
       role: "user",
@@ -154,17 +157,7 @@ export async function loopAgent(
 
     if (finished === "stop") {
       console.log("LLM finished generating response, exiting loop.");
-      const content = lastMessageContent(messages);
-
-      return {
-        stepId: step.id,
-        messages: [
-          {
-            role: "assistant",
-            content,
-          },
-        ],
-      };
+      return lastMessageContent(messages);
     }
 
     // -----------------------------------------------------
@@ -221,15 +214,7 @@ export async function loopAgent(
     }
   }
 
-  return {
-    stepId: step.id,
-    messages: [
-      {
-        role: "assistant",
-        content: "<I failed to execute this step>",
-      },
-    ],
-  };
+  return "<I failed to execute this step>";
 }
 
 async function streamModel(
