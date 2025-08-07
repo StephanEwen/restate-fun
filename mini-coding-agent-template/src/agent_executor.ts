@@ -1,11 +1,11 @@
 import * as restate from "@restatedev/restate-sdk"
-import { TerminalError } from "@restatedev/restate-sdk";
+import { RestatePromise, TerminalError } from "@restatedev/restate-sdk";
 import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
-import { AgentTask, Entry  } from "./types";
-import assert from "node:assert";
-import { preparePlan, executePlanStep } from "./llms";
+import { AgentTask  } from "./types";
+import { preparePlan, executePlanStep, StepInput, StepResult } from "./plan";
+import { sandbox } from "./sandbox";
 
 const handler = restate.handlers.handler;
 
@@ -30,74 +30,126 @@ export const agentExecutor = restate.service({
           task.agentId
         );
 
-        // let's first compute a plan for the task
+        // First, let's create a plan of how to approach the task.
+        // We will use the LLM to generate a plan based on the task description.
+        // We store the plan durably in the Restate journal,
+        // because we will acquire resources for each step, and we want to make sure that
+        // we can clean them up if the task fails or is canceled.
+
         const plan = await restate.run(
           "compute a plan",
           () => preparePlan({ task, abortSignal }),
           { maxRetryAttempts: 3 }
         );
-        
-        // notify the agent that we have a plan
-        const newEntries: Entry[] = plan.map((step) => ({
-          role: "agent",
-          message: `Step ${step.id}: ${step.title} - ${step.description}`,
-        }));
 
+        // notify the agent that we have a plan
         agent.addUpdate({
           taskId,
-          entries: newEntries,
+          entries: plan.map((step) => ({
+            role: "agent",
+            message: `Step ${step.id}: ${step.title}`,
+          })),
         });
 
-        // handle the plan steps
+        const stepResults = [];
+        const resourcesToClean = [];
+
         for (const step of plan) {
+          // notify the agent that we are executing the step
           agent.addUpdate({
             taskId,
             entries: [
-              { role: "agent", message: `Executing step ${step.id}: ${step.title}` },
+              {
+                role: "agent",
+                message: `Executing step ${step.id}: ${step.title}`,
+              },
             ],
           });
-          
-          // here is the place where we can setup various resources 
-          // like an S3 bucket, a database, etc'.
+
+          // here is the place where we can setup various resources
+          // like an S3 bucket, a database, a pubsub topic, a sandboxed environment.
           // we can make sure that they are cleaned up after the task is done.
           // In this demo we don't use any resources, but you can imagine that this is where
           // we can compute stable names that will persist across retries.
           // and ephemeral names like a staging area.
+          // setup the environment for the step
+          const sandboxClient = restate.serviceClient(sandbox);
+          const { sandboxId, sandboxUrl } = await sandboxClient.acquire({
+            agentId: task.agentId,
+          });
 
-          let messages: string[] = [];
-          try {
-            // Make an LLM call to start the task execution.
-            // The LLM will stream updates off-band, so that the user can see the progress.
-            // Once the LLM is done, we can send to the agent
-            // to decide on the next steps.
-            messages = await restate.run(
-              "call an LLM step",
-              () => executePlanStep(taskId, task, step, abortSignal),
-              {
-                maxRetryAttempts: 2,
-              }
-            );
-          } catch (e) {
-            // the LLM call failed, we can notify the agent.
-            assert(e instanceof TerminalError);
-            // if the error is a terminal error, we can let the agent know
-            agent.taskFailed({
-              taskId,
-              message: `Task failed at step ${step.id}: ${e.message}`,
-            });
-            throw e;
-          }
+          // This is a cleanup saga, we will release all these resources later.
+          resourcesToClean.push(() => sandboxClient.release({ sandboxId }));
 
-          // send the updates to the agent
-          agent.addUpdate({
+          // Add here any addtional stateful resource, like a provisioned db, a browser session, etc.
+          const stepInput = {
             taskId,
-            entries: messages.map((message) => ({ role: "agent", message })),
+            stepId: step.id,
+            task,
+            step,
+            sandboxUrl,
+            sandboxId,
+            topic: `task-${taskId}-step-${step.id}`,
+            s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
+            tempDirectory: `task-${taskId}-step-${step.id}`,
+            planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
+          };
+
+          const stepPromise = restate
+            .serviceClient(agentExecutor)
+            .executePlanStep(stepInput);
+
+          // const stepPromise = restate.run(
+          //   `execute ${step.title}`,
+          //   () => executePlanStep(stepInput),
+          //   {
+          //     maxRetryAttempts: 2,
+          //   }
+          // );
+
+          // let's remember the promise so that we can wait for it later
+          // and things we'd need to clean up after it
+          // Note that we provide a timeout of no more than 5 minutes for each step.
+          // We can really go overboard here, with indevidual timeouts, and retry policies.
+          stepResults.push(stepPromise.orTimeout({ minutes: 5 }));
+        }
+        try {
+          // wait for all steps to complete.
+          // If our parent Agent requests a cancelation, the line below will throw a TerminalError
+          // if any of the steps fail, we will catch the error and notify the agent.
+          // if all steps succeed, we will notify the agent that the task is complete.
+          await RestatePromise.all(stepResults);
+        } catch (error) {
+          const failure = error as TerminalError;
+          agent.taskFailed({
+            taskId,
+            message: `Failed: ${failure.message}`,
+          });
+          throw failure;
+        } finally {
+          resourcesToClean.reverse(); // reverse the order to clean up in reverse order
+          resourcesToClean.forEach((cleanup) => {
+            cleanup();
           });
         }
         // we are done
         agent.taskComplete({ taskId, message: "finished" });
       }
     ),
+
+    executePlanStep: async (
+      restate: restate.Context,
+      stepInput: StepInput
+    ): Promise<StepResult> => {
+
+      const abortSignal = restate.request().attemptCompletedSignal;
+
+      return await restate.run(
+        `execute ${stepInput.step.title}`,
+        () => executePlanStep(stepInput, abortSignal),
+        { maxRetryAttempts: 2 }
+      );
+    },
   },
   options: {
     journalRetention: { days: 1 },
