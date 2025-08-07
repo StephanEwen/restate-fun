@@ -75,7 +75,7 @@ export async function preparePlan(params: {
       messages,
     });
 
-  return plan.steps;
+    return plan.steps;
 }
 
 

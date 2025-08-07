@@ -87,23 +87,28 @@ export const agentExecutor = restate.service({
             step,
             sandboxUrl,
             sandboxId,
-            topic: `task-${taskId}-step-${step.id}`,
+            topic: `${task.agentId}:${taskId}:${step.id}`, // <-- topic for step messages
             s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
             tempDirectory: `task-${taskId}-step-${step.id}`,
             planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
           };
 
+          // In this example, we assume the plan can be run in parallel, in reality this might not be the case.
+          // And some steps need to run sequentially, and some in parallel,
+          // but for the simplicity of this demo, we will assume that they can be done in parallel.
           const stepPromise = restate
             .serviceClient(agentExecutor)
             .executePlanStep(stepInput);
 
-          // const stepPromise = restate.run(
-          //   `execute ${step.title}`,
-          //   () => executePlanStep(stepInput),
-          //   {
-          //     maxRetryAttempts: 2,
-          //   }
-          // );
+          // We can also run the steps inline like that:
+          //
+          //      const stepPromise = restate.run(
+          //        `execute ${step.title}`,
+          //         () => executePlanStep(stepInput),
+          //         {
+          //           maxRetryAttempts: 2,
+          //         }
+          //      );
 
           // let's remember the promise so that we can wait for it later
           // and things we'd need to clean up after it
@@ -135,18 +140,21 @@ export const agentExecutor = restate.service({
       }
     ),
 
-    executePlanStep: async (
-      restate: restate.Context,
-      stepInput: StepInput
-    ): Promise<StepResult> => {
-      const abortSignal = restate.request().attemptCompletedSignal;
+    executePlanStep: restate.createServiceHandler(
+      { ingressPrivate: true },
+      async (
+        restate: restate.Context,
+        stepInput: StepInput
+      ): Promise<StepResult> => {
+        const abortSignal = restate.request().attemptCompletedSignal;
 
-      return await restate.run(
-        `execute ${stepInput.step.title}`,
-        () => executePlanStep(stepInput, abortSignal),
-        { maxRetryAttempts: 2 }
-      );
-    },
+        return await restate.run(
+          `execute ${stepInput.step.title}`,
+          () => executePlanStep(stepInput, abortSignal),
+          { maxRetryAttempts: 2 }
+        );
+      }
+    ),
   },
   options: {
     journalRetention: { days: 1 },

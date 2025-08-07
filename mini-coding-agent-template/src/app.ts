@@ -8,9 +8,9 @@ import { sandbox } from "./sandbox";
 
 if (env.OPENAI_API_KEY === undefined) {
   console.warn(`
-    ----------------------------------------------------------
-    | WARNING: OPENAI_API_KEY is not set in the environment. |
-    ----------------------------------------------------------
+    -------------------------------------------------------------
+    | ❌ WARNING: OPENAI_API_KEY is not set in the environment. |
+    -------------------------------------------------------------
     `);
 }
 
