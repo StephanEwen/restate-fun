@@ -145,6 +145,24 @@ export const agent = restate.object({
         return await restate.get("messages", binarySerDe);
       }
     ),
+    
+    cancelTask: async (
+      restate: restate.ObjectContext<State>) => {
+       // abort ongoing task, if there is one
+        const ongoingTask = await restate.get("currentTaskId");
+        if (ongoingTask) {
+          await cancelTask(restate, ongoingTask, { seconds: 30 });
+          restate.clear("currentTaskId");
+
+          const messages = (await restate.get("messages")) ?? [];
+          messages.push({
+            role: "agent",
+            message: "The ongoing task was cancelled",
+          });
+          restate.set("messages", messages);
+        }
+       
+      }
   },
   options: {
     // default retention, unless overridden at the handler level
