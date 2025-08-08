@@ -95,6 +95,21 @@ class SandboxManager {
     return output;
   }
 
+  async writeFile(id: string, filePath: string, content: string) {
+    const container = this.sandboxes.get(id);
+    if (!container) {
+      throw new TerminalError(`No sandbox found with id '${id}'`);
+    }
+    await container.copyContentToContainer([
+      {
+        content: content,
+        target: filePath,
+      },
+    ]);
+    console.log(`[${id}] Created file '${filePath}' with content: ${content}`);
+    return `File '${filePath}' created successfully`;
+  }
+
   async release(id: string) {
     const container = this.sandboxes.get(id);
     if (!container) {
@@ -180,7 +195,7 @@ const server = createServer((req, res) => {
     return;
   }
   // ----------
-  // release sandbox
+  // execute sandbox command
   // ----------
   if (req.url?.startsWith("/execute")) {
     const id = req.url.slice("/execute/".length);
@@ -197,6 +212,35 @@ const server = createServer((req, res) => {
       }
       sandboxManager
         .exec(id, body)
+        .then((output) => {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end(output);
+        })
+        .catch((err) => {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end(`${err}`);
+        });
+    });
+    return;
+  }
+  // ----------
+  // create file in sandbox
+  // ----------
+  if (req.url?.startsWith("/writeFile")) {
+    const id = req.url.slice("/writeFile/".length);
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      if (!body) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("No command provided");
+        return;
+      }
+      const { content, filePath } = JSON.parse(body); // ensure body is valid JSON
+      sandboxManager
+        .writeFile(id, filePath, content)
         .then((output) => {
           res.writeHead(200, { "Content-Type": "text/plain" });
           res.end(output);

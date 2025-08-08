@@ -4,7 +4,6 @@ import {
   CoreMessage,
   streamText,
   streamObject,
-  ToolResultPart,
 } from "ai";
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
@@ -18,13 +17,28 @@ import { z } from "zod";
 const TOOLS = {
   executeCommand: {
     parameters: z.object({
-      command: z.string(),
+      command: z.string().describe("The shell command to execute."),
     }),
-    description:
-      `Execute a bash command in the remote environment.
-      If the command returns with an exit code other than 0, it is considered an error, and the output is stderr.
-      otherwise it is success and the output is stdout.
-      The command should not require user input, and should be non-interactive.`,
+    description: `Executes a non-interactive shell command on the Ubuntu Linux environment. 
+This is your primary tool for interacting with the file system, managing dependencies, and running processes.
+- Use for commands like 'ls -R', 'mkdir -p my-dir', 'npm install', 'cat file.txt'.
+- To write or create a file, use 'echo "file content" > path/to/file.txt'.
+- The command must not require user input.
+- The tool returns the combined stdout and stderr. Check the output carefully for errors.`,
+  },
+  createFile: {
+    parameters: z.object({
+      filePath: z
+        .string()
+        .describe(
+          "The full path where the file should be created, e.g., 'src/index.js'."
+        ),
+      content: z.string().describe("The content to write into the file."),
+    }),
+    description: `A high-level tool to create a new file with specified content. 
+This is often more reliable for writing multi-line code than using 'echo' with 'executeCommand'.
+- If the file already exists, it will be completely overwritten.
+- Use this for writing source code, configuration files, or documentation.`,
   },
 };
 
@@ -158,6 +172,9 @@ export async function agentLoop(
       - Ubuntu machine with git and npm installed
       - Use only non-interactive bash commands (no 'npm start', 'nano', etc.)
       - Always check command output for errors and handle them appropriately
+        
+      # The larger task that this step is part of
+      ${task.prompt}
       
       # Your task
       Step: ${step.title}
@@ -169,24 +186,19 @@ export async function agentLoop(
       ${step.prompt}
       
       # Previous steps results
-      ${stepResults.join("\n")}
+      ${stepResults.map((res) => `- ${res}`).join("\n")}
       
       # Guidelines
       1. Think step-by-step and explain your reasoning
       2. Write clean, well-documented code with error handling
       3. When using tools, explain why you're using them and what you expect
       4. If a command fails, analyze the error and try an alternative approach
-      5. Conclude with a clear summary of what you accomplished and any next steps
+      5. Conclude with a clear summary of what you accomplished
       
       Always focus on completing the current step successfully before moving on.
       `,
     },
-    {
-      role: "user",
-      content: task.prompt,
-    },
   ];
-
 
 
   for (let i = 0; i < 25; i++) {
@@ -212,6 +224,26 @@ export async function agentLoop(
     // -----------------------------------------------------
 
     for (const call of calls) {
+      if (call.toolName === "createFile") {
+        const result = await restate.run(
+          "create file",
+          () => writeFileInSandbox(sandboxId, call.args),
+          { maxRetryAttempts: 5 }
+        );
+
+        history.push({
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result,
+            },
+          ],
+        });
+      }
+
       if (call.toolName === "executeCommand") {
         const { command } = call.args;
         
@@ -237,6 +269,20 @@ export async function agentLoop(
   }
 
   return "<I failed to execute this step withn 25 iterations>";
+}
+
+async function writeFileInSandbox(sandboxId: string, args: {filePath: string, content: string}): Promise<string> {
+  const response = await fetch(`http://localhost:3000/writeFile/${sandboxId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to write file: ${response.statusText}`);
+  }
+  return response.text();
 }
 
 async function runInSandbox(sandboxId: string, command: string): Promise<string> {
@@ -314,18 +360,6 @@ async function streamStructuredModel<T>(
   await streamToUi("\n\n >>>>>>>>> End Planning... <<<<<<<<<\n\n");
 
   return await object;
-}
-
-async function executeCodeSearch(query: string): Promise<string> {
-  // Here you would implement the logic to search for code snippets in the remote environment
-  // For example, you might use an RPC call to a remote service that retrieves the code snippets.
-  return `Found code snippets for query: ${query}`;
-}
-
-async function getFileContent(filePath: string): Promise<string> {
-  // Here you would implement the logic to fetch the file content from the remote environment
-  // For example, you might use an RPC call to a remote service that retrieves the file content.
-  return `Content of file at path: ${filePath}`;
 }
 
 // Utility function to get the last message content

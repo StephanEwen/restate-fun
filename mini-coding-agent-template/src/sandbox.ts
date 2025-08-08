@@ -41,9 +41,7 @@ export const sandbox = service({
             }
           );
           if (!res.ok) {
-            throw new Error(
-              `Failed to provision sandbox: ${res.statusText}`
-            );
+            throw new Error(`Failed to provision sandbox: ${res.statusText}`);
           }
         },
         { maxRetryAttempts: 5 }
@@ -59,24 +57,27 @@ export const sandbox = service({
       ctx: Context,
       req: { sandboxId: string }
     ): Promise<void> => {
-      // This is a placeholder for the release handler.
-      // Implement your release logic here.
       const { sandboxId } = req;
 
-      await ctx.run("release", async () => {
-        const res = await fetch(`http://localhost:3000/release/${sandboxId}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        })
-        
-        if (!res.ok) {
-          throw new TerminalError(
-            `Failed to release sandbox: ${res.statusText}`
+      await ctx.run(
+        "release",
+        async () => {
+          const res = await fetch(
+            `http://localhost:3000/release/${sandboxId}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+            }
           );
-        }
-      });
+
+          if (!res.ok) {
+            throw new Error(`Failed to release sandbox: ${res.statusText}`);
+          }
+        },
+        { maxRetryAttempts: 5 }
+      );
     },
   },
   options: {
