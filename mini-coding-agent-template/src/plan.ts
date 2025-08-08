@@ -4,11 +4,16 @@ import {
   CoreMessage,
   generateObject,
   streamText,
+  streamObject,
   ToolResultPart,
 } from "ai";
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
+
+// --------------------------------------------------------
+//  The actual agentic planning and plan step execution
+// --------------------------------------------------------
 
 // A set of tools that the LLM can use to execute the steps
 const TOOLS = {
@@ -43,8 +48,8 @@ const TOOLS = {
  * @returns A promise that resolves to an array of PlanStep objects representing the plan for the task.
  */
 export async function preparePlan(params: {
-  task: AgentTask;
-  abortSignal: any;
+  task: AgentTask,
+  abortSignal: AbortSignal
 }): Promise<PlanStep[]> {
   const { task, abortSignal } = params;
 
@@ -75,15 +80,17 @@ export async function preparePlan(params: {
     }
   }
 
-  // Call the LLM to generate a plan
-  const { object: plan } = await generateObject({
-    model: openai("gpt-4o", { structuredOutputs: true }),
-    schema: z.object({
-      steps: z.array(PlanStep),
-    }),
+  // Call the LLM to generate a plan using streaming with structured output
+  // This demonstrates how to use streaming while maintaining structured output with schema validation
+  const plan = await streamStructuredModel(
     abortSignal,
     messages,
-  });
+    z.object({
+      steps: z.array(PlanStep),
+    }),
+    "plan",
+    task.agentId
+  );
 
   return plan.steps;
 }
@@ -149,7 +156,7 @@ export async function loopAgent(
 
     const { calls, messages, finished } = await restate.run(
       `execute ${step.title} iteration ${i + 1}`,
-      () => streamModel(abortSignal, history, step.id, taskId, topic),
+      () => streamModel(abortSignal, history, step.id, topic),
       { maxRetryAttempts: 3 }
     );
 
@@ -221,7 +228,6 @@ async function streamModel(
   abortSignal: AbortSignal,
   history: CoreMessage[],
   stepId: string,
-  taskId: string,
   topic: string
 ) {
   const { textStream, toolCalls, response, finishReason } = streamText({
@@ -231,15 +237,15 @@ async function streamModel(
     tools: TOOLS,
   });
 
-  const streamToUi = browserStream(abortSignal, topic, taskId, stepId);
+  const streamToUi = browserStream(abortSignal, topic, stepId);
 
-  await streamToUi(" >>> Begin LLM response <<<");
+  await streamToUi("\n\n >>>>>>>> Begin LLM response <<<<<<<<\n\n");
 
   for await (const textPart of textStream) {
     await streamToUi(textPart);
   }
 
-  await streamToUi(" >>> End LLM response <<<");
+  await streamToUi("\n\n >>>>>>>>> End LLM response <<<<<<<<<\n\n");
 
   const { messages } = await response;
   const calls = await toolCalls;
@@ -250,6 +256,35 @@ async function streamModel(
     calls,
     messages, // <-- this might be large, and if we want we can store this offband, for example in S3, and provide a link to it instead.
   };
+}
+
+/**
+ * Streams structured output with schema validation.
+ */
+async function streamStructuredModel<T>(
+  abortSignal: AbortSignal,
+  history: CoreMessage[],
+  schema: z.ZodSchema<T>,
+  stepId: string,
+  topic: string
+): Promise<T> {
+
+  const { object, textStream } = streamObject({
+    model: openai("gpt-4o", { structuredOutputs: true }),
+    schema,
+    messages: history,
+    abortSignal,
+  });
+
+  const streamToUi = browserStream(abortSignal, topic, stepId);
+
+  await streamToUi("\n\n >>>>>>>> Begin Planning... <<<<<<<<\n\n");
+  for await (const textPart of textStream) {
+    await streamToUi(textPart);
+  }
+  await streamToUi("\n\n >>>>>>>>> End Planning... <<<<<<<<<\n\n");
+
+  return await object;
 }
 
 async function executeCodeSearch(query: string): Promise<string> {
@@ -291,7 +326,7 @@ function lastMessageContent(messages: CoreMessage[]): string {
   return "<Last message content is not text>";
 }
 
-function browserStream(abortSignal: AbortSignal, topic: string, taskId: string, stepId: string): (nextText: string) => Promise<void> {
+function browserStream(abortSignal: AbortSignal, topic: string, stepId: string): (nextText: string) => Promise<void> {
   return async (message: string) => {
     await fetch(`http://localhost:3000/publish/${topic}`, {
       method: "POST",
@@ -299,7 +334,7 @@ function browserStream(abortSignal: AbortSignal, topic: string, taskId: string, 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        taskId,
+        taskId: "n/a",
         stepId,
         message,
         topic,
