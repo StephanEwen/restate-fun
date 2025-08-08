@@ -1,5 +1,4 @@
 import { Serde, serde, TerminalError } from "@restatedev/restate-sdk"
-import { close } from "fs";
 
 export const jsonPassThroughSerde: Serde<Uint8Array> = {
     contentType: "application/json",
@@ -12,7 +11,6 @@ export function rethrowIfNotTerminal(e: unknown) {
         throw e;
     }
 }
-
 
 export const pubsubClient = async (topic: string) => {
 

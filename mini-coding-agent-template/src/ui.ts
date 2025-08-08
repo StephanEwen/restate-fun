@@ -70,7 +70,7 @@ class SandboxManager {
       .withPullPolicy(PullPolicy.alwaysPull())
       .start();
     this.sandboxes.set(id, container);
-    console.log(`Sandbox '${id}' provisioned from image '${this.image}'`);
+    console.log(`Sandbox '${id}' provisioned from image '${this.image}' with id '${container.getId()}'`);
   }
 
   async exec(id: string, command: string) {
@@ -107,9 +107,9 @@ class SandboxManager {
     if (!container) {
       return;
     }
-    await container.stop();
     this.sandboxes.delete(id);
-    console.log(`Sandbox '${id}' released`);
+    setTimeout(() => container.stop(), 5 * 60 * 1000);
+    console.log(`Sandbox '${id}' is scheduled for deletion in 5 minutes`);
   }
 
   async releaseAll() {
@@ -239,7 +239,6 @@ app.get("/", async (c) => {
 });
 
 app.notFound((c) => c.text('Not Found', 404));
-
 
 const server = serve({ ...app, port: 3000 }, (info) => {
   console.log(`Server running at http://localhost:${info.port}`);
