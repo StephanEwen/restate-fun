@@ -115,6 +115,20 @@
         .button-container {
             flex-shrink: 0;
         }
+        
+        .cancel-button {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            white-space: nowrap;
+        }
 
         button {
             background: #3498db;
@@ -260,6 +274,9 @@
                         <div class="button-container">
                             <button onclick="subscribe()">Start</button>
                         </div>
+                        <div class="button-container">
+                            <button class="cancel-button" onclick="cancel()">Cancel</button>
+                        </div>
                     </div>
                 </div>
 
@@ -274,9 +291,9 @@
     </div>
 
     <script>
-        let eventSource = null;
+        let ws = null;
         let currentAgentId = null;
-
+        
         function subscribe() {
             const prompt = document.getElementById("prompt").value;
             const agentId = document.getElementById("agentId").value;
@@ -293,31 +310,46 @@
 
             const textarea = document.getElementById("message");
 
-            // Only create new EventSource if it doesn't exist or if agentId changed
-            if (!eventSource || currentAgentId !== agentId) {
-                // Close existing EventSource if it exists
-                if (eventSource) {
-                    eventSource.close();
+            // Only create new WebSocket if it doesn't exist or if agentId changed
+            if (!ws || currentAgentId !== agentId) {
+                // Close existing WebSocket if it exists
+                if (ws) {
+                    ws.close();
                 }
-                
-                eventSource = new EventSource("/subscribe/" + agentId);
-                currentAgentId = agentId;
-
-                eventSource.onopen = function() {
-                    console.log("Connected to agent:", agentId);
+                ws = new WebSocket('ws://localhost:3000/ws/subscribe/' + agentId);
+                ws.onopen = () => {
+                    console.log('Connected to server');
                 };
-
-                eventSource.onmessage = function (event) {
-                    const data = JSON.parse(event.data);
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+                ws.onmessage = (event) => {
+                    const { step, message } = JSON.parse(event.data);
+                    
                     const content = textarea.value;
-                    textarea.value = content ? content + " " + data.message : data.message;
+                    textarea.value = content ? content + " " + message : message;
                     textarea.scrollTop = textarea.scrollHeight;
-                    console.log(data);
+                    console.log(`Server says: ${message}`)
                 };
+                currentAgentId = agentId;
+            }
+        }
+            
+        function cancel() {
+            
+           fetch("http://localhost:8080/agent/" + currentAgentId + "/cancelTask/send", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+            }).catch((error) => {
+                console.error("Error:", error);
+            });
 
-                eventSource.onerror = function() {
-                    console.log("Connection lost");
-                };
+            if (ws) {
+                ws.close();
+                ws = null;
+                currentAgentId = null;
             }
         }
     </script>

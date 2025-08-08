@@ -1,5 +1,5 @@
 
-import { Context, service } from "@restatedev/restate-sdk";
+import { Context, service, TerminalError } from "@restatedev/restate-sdk";
 
 export type AcquireSandboxRequest = {
   agentId: string;
@@ -25,9 +25,31 @@ export const sandbox = service({
     ): Promise<AcquireSandboxResponse> => {
       // This is a placeholder for the lease handler.
       // Implement your lease logic here.
+      const sandboxId = ctx.rand.uuidv4();
+
+      await ctx.run(
+        "provision",
+        async () => {
+          const res = await fetch(
+            `http://localhost:3000/provision/${sandboxId}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({}),
+            }
+          );
+          if (!res.ok) {
+            throw new Error(`Failed to provision sandbox: ${res.statusText}`);
+          }
+        },
+        { maxRetryAttempts: 5 }
+      );
+
       return {
-        sandboxId: "some-sandbox-id",
-        sandboxUrl: "https://example.com/sandbox",
+        sandboxId,
+        sandboxUrl: `http://localhost:3000/execute/${sandboxId}`,
       };
     },
 
@@ -35,12 +57,31 @@ export const sandbox = service({
       ctx: Context,
       req: { sandboxId: string }
     ): Promise<void> => {
-      // This is a placeholder for the release handler.
-      // Implement your release logic here.
+      const { sandboxId } = req;
+
+      await ctx.run(
+        "release",
+        async () => {
+          const res = await fetch(
+            `http://localhost:3000/release/${sandboxId}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+            }
+          );
+
+          if (!res.ok) {
+            throw new Error(`Failed to release sandbox: ${res.statusText}`);
+          }
+        },
+        { maxRetryAttempts: 5 }
+      );
     },
   },
   options: {
     journalRetention: { hours: 1 },
-    idempotencyRetention: { hours: 1 }
+    idempotencyRetention: { hours: 1 },
   },
 });
