@@ -214,36 +214,45 @@ export async function agentLoop(
     for (const call of calls) {
       if (call.toolName === "executeCommand") {
         const { command } = call.args;
-        const result = await restate.run("execute command", () =>
-          fetch(`http://localhost:3000/execute/${sandboxId}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "text/plain",
-            },
-            body: command,
-            signal: abortSignal,
-          }).then((res) => {
-            if (!res.ok) {
-              return `Command failed with status ${res.status}`;
-            }
-            return res.text();
-          })
+        
+        const result = await restate.run(
+          "execute command",
+          () => runInSandbox(sandboxId, command),
+          { maxRetryAttempts: 5 }
         );
-        const content: ToolResultPart = {
-          type: "tool-result",
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          result,
-        };
+        
         history.push({
           role: "tool",
-          content: [content],
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result,
+            },
+          ],
         });
       }
     }
   }
 
-  return "<I failed to execute this step>";
+  return "<I failed to execute this step withn 25 iterations>";
+}
+
+async function runInSandbox(sandboxId: string, command: string): Promise<string> {
+  const response = await fetch(`http://localhost:3000/execute/${sandboxId}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+      },
+      body: command,
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Command failed with status ${response.status}`);
+  }
+  return response.text();
 }
 
 async function streamModel(
