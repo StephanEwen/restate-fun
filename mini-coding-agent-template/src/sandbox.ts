@@ -1,5 +1,6 @@
 
 import { Context, service } from "@restatedev/restate-sdk";
+import { sandboxManager } from "./sandbox_toy";
 
 export type AcquireSandboxRequest = {
   agentId: string;
@@ -25,9 +26,15 @@ export const sandbox = service({
     ): Promise<AcquireSandboxResponse> => {
       // This is a placeholder for the lease handler.
       // Implement your lease logic here.
+      const sandboxId = ctx.rand.uuidv4();
+
+      await ctx.run("provision", async () => {
+        await sandboxManager.provision(sandboxId);
+      });
+
       return {
-        sandboxId: "some-sandbox-id",
-        sandboxUrl: "https://example.com/sandbox",
+        sandboxId,
+        sandboxUrl: `https://example.com/sandbox/${sandboxId}`,
       };
     },
 
@@ -35,12 +42,11 @@ export const sandbox = service({
       ctx: Context,
       req: { sandboxId: string }
     ): Promise<void> => {
-      // This is a placeholder for the release handler.
-      // Implement your release logic here.
+      await sandboxManager.release(req.sandboxId);
     },
   },
   options: {
     journalRetention: { hours: 1 },
-    idempotencyRetention: { hours: 1 }
+    idempotencyRetention: { hours: 1 },
   },
 });

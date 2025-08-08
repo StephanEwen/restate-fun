@@ -4,7 +4,7 @@ import { serde } from "@restatedev/restate-sdk-zod"
 import { z } from "zod";
 import { type Agent } from "./agent";
 import { AgentTask, StepInput, StepResult } from "./types";
-import { preparePlan, loopAgent } from "./plan";
+import { preparePlan, agentLoop } from "./plan";
 import { sandbox } from "./sandbox";
 import { rethrowIfNotTerminal } from "./utils";
 
@@ -162,7 +162,7 @@ export const agentExecutor = restate.service({
         restate: restate.Context,
         stepInput: StepInput
       ): Promise<StepResult> => {
-        return loopAgent(restate, stepInput);
+        return agentLoop(restate, stepInput);
       }
     ),
   },
