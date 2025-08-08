@@ -8,6 +8,7 @@ import {
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
+import { pubsubClient } from "./utils";
 
 // --------------------------------------------------------
 //  The actual agentic planning and plan step execution
@@ -316,7 +317,7 @@ async function streamModel(
     tools: TOOLS,
   });
 
-  const streamToUi = browserStream(abortSignal, topic, stepId);
+  const streamToUi = await browserStream(topic, stepId);
 
   for await (const textPart of textStream) {
     await streamToUi(textPart);
@@ -353,7 +354,7 @@ async function streamStructuredModel<T>(
     abortSignal
   });
 
-  const streamToUi = browserStream(abortSignal, topic, stepId);
+  const streamToUi = await browserStream(topic, stepId);
 
   await streamToUi("\n\n >>>>>>>> Begin Planning... <<<<<<<<\n\n");
   for await (const textPart of textStream) {
@@ -385,29 +386,29 @@ function lastMessageContent(messages: CoreMessage[]): string {
   return "<Last message content is not text>";
 }
 
-function browserStream(abortSignal: AbortSignal, topic: string, stepId: string): (nextText: string) => Promise<void> {
+async function browserStream(topic: string, stepId: string) {
+  const publisher = await pubsubClient(topic);
+
   return async (message: string) => {
+    
+    const body = {
+      taskId: "n/a",
+      stepId,
+      message,
+      topic,
+    };
+
     // do a few local retries, but never let an error bubble up to not
     // fail the step just if this stream fails
     for (let i = 0; i < 3; i++) {
       try {
-        await fetch(`http://localhost:3000/publish/${topic}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            taskId: "n/a",
-            stepId,
-            message,
-            topic,
-          }),
-          signal: abortSignal,
-        });
-        return;
+        publisher.publish(body);
+        return Promise.resolve();
       } catch (error) {
-        // ignore
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
+
+    return Promise.reject(new Error("Failed to publish message"));
   };
 }

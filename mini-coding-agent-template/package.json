@@ -25,10 +25,11 @@
     "ai": "^4.3.16",
     "hono": "^4.9.0",
     "superjson": "^2.2.2",
-    "testcontainers": "^11.5.1"
+    "testcontainers": "^11.5.1",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/node": "^20.14.2",
+    "@types/node": "^22.0.0",
     "esbuild": "^0.25.4",
     "tsx": "^4.19.2",
     "typescript": "^5.4.5"

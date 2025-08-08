@@ -316,8 +316,7 @@
                 if (ws) {
                     ws.close();
                 }
-                // client.js
-                ws = new WebSocket('ws://localhost:3000/ws/' + agentId, 'echo-protocol');
+                ws = new WebSocket('ws://localhost:3000/ws/subscribe/' + agentId);
                 ws.onopen = () => {
                     console.log('Connected to server');
                 };

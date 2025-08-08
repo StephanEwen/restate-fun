@@ -4,7 +4,6 @@
 
 import { StartedTestContainer, GenericContainer, PullPolicy } from "testcontainers";
 import { Hono } from 'hono';
-import { stream } from 'hono/streaming';
 import { serve } from "@hono/node-server";
 import { readFile } from "fs/promises";
 import { createNodeWebSocket } from "@hono/node-ws";
@@ -134,10 +133,14 @@ const app = new Hono();
 
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
+// -------------------------------------------------------------------------------------
+// Websocket for PubSub
+// -------------------------------------------------------------------------------------
+
 app.get(
-  '/ws/:topic',
+  "/ws/subscribe/:topic",
   upgradeWebSocket((c) => {
-    const topic = c.req.param('topic');
+    const topic = c.req.param("topic");
     return {
       onOpen: (_, ws) => {
         pubsub.subscribe(topic, (message) => {
@@ -152,29 +155,30 @@ app.get(
       },
     };
   })
-)
+);
 
-app.get('/subscribe/:topic', (c) => {
-  const topic = c.req.param('topic');
-  
-  return stream(c, async (stream) => {
-    c.header("Content-Type", "text/event-stream");
-    c.header("Cache-Control", "no-cache");
-    c.header("Connection", "keep-alive");
+app.get(
+  "/ws/publish/:topic",
+  upgradeWebSocket((c) => {
+    const topic = c.req.param("topic");
+    return {
+      onOpen: (_, ws) => {},
+      onMessage: async (message, ws) => {
+        pubsub.publish(topic, message.data);
+      },
+      onClose: () => {
+        console.log("Client disconnected");
+      },
+      onError: (err) => {
+        console.error("WebSocket error", err);
+      },
+    };
+  })
+);
 
-    pubsub.subscribe(topic, (message) => {
-      stream.write(`data: ${message}\n\n`);
-    });
-  });
-});
-
-app.post('/publish/:topic', async (c) => {
-  const topic = c.req.param('topic');
-  const body = await c.req.text();
-  
-  pubsub.publish(topic, body);
-  return c.body(null, 204);
-});
+// -------------------------------------------------------------------------------------
+// REST endpoints for sandbox management
+// -------------------------------------------------------------------------------------
 
 app.post('/provision/:id', async (c) => {
   const id = c.req.param('id');
