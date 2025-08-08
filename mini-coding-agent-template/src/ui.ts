@@ -1,20 +1,12 @@
 //
-// simple in memory pubsub server for demo purposes
-//
-// open in your browser at http://localhost:3000 to subscribe to a topic
-// and publish messages to it
-// you can use curl to test it as well
-//
-// curl http://localhost:3000/publish/example --json '{"message": "Hello World!"}',
-//
-// or
-// curl http://localhost:3000/subscribe/example
+// Simple in memory pubsub/and sandbox server for demo purposes
 //
 
-import { createServer } from "node:http";
-import { readFile } from "node:fs";
-import { TerminalError } from "@restatedev/restate-sdk";
 import { StartedTestContainer, GenericContainer, PullPolicy } from "testcontainers";
+import { Hono } from 'hono';
+import { stream } from 'hono/streaming';
+import { serve } from "@hono/node-server";
+import { readFile } from "fs/promises";
 
 // -------------------------------------------------------------------------------------
 // Pubsub
@@ -84,7 +76,7 @@ class SandboxManager {
   async exec(id: string, command: string) {
     const container = this.sandboxes.get(id);
     if (!container) {
-      throw new TerminalError(`No sandbox found with id '${id}'`);
+      throw new Error(`No sandbox found with id '${id}'`);
     }
     const result = await container.exec(["bash", "-c", command]);
     if (result.exitCode !== 0) {
@@ -98,7 +90,7 @@ class SandboxManager {
   async writeFile(id: string, filePath: string, content: string) {
     const container = this.sandboxes.get(id);
     if (!container) {
-      throw new TerminalError(`No sandbox found with id '${id}'`);
+      throw new Error(`No sandbox found with id '${id}'`);
     }
     await container.copyContentToContainer([
       {
@@ -126,7 +118,7 @@ class SandboxManager {
       console.log(`Sandbox '${id}' released`);
     }
     this.sandboxes.clear();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
@@ -137,157 +129,116 @@ class SandboxManager {
 export const sandboxManager = new SandboxManager();
 export const pubsub = new Pubsub();
 
-const server = createServer((req, res) => {
-  // ----------
-  // subscribe
-  // ----------
-  if (req.url?.startsWith("/subscribe")) {
-    const topic = req.url.slice("/subscribe/".length);
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    pubsub.subscribe(topic, (message) => {
-      res.write(`data: ${message}\n\n`);
-    });
-    return;
-  }
-  // ----------
-  // publish
-  // ----------
-  if (req.url?.startsWith("/publish")) {
-    const topic = req.url.slice("/publish/".length);
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      pubsub.publish(topic, body);
-      res.writeHead(204);
-      res.end();
-    });
-    return;
-  }
-  // ----------
-  // provision sandbox
-  // ----------
-  if (req.url?.startsWith("/provision")) {
-    const id = req.url.slice("/provision/".length);
-    sandboxManager.provision(id).then(() => {
-      res.writeHead(200);
-      res.end();
-    }).catch((err) => {
-      console.error(`Error provisioning sandbox: ${err}`);
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end(`Error provisioning sandbox: ${err}`);
-    });
-    return;
-  }
-  // ----------
-  // release sandbox
-  // ----------
-  if (req.url?.startsWith("/release")) {
-    const id = req.url.slice("/release/".length);
-    sandboxManager.release(id).then(() => {
-      res.writeHead(204);
-      res.end();
-    }).catch((err) => {
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end(`Error releasing sandbox: ${err}`);
-    });
-    return;
-  }
-  // ----------
-  // execute sandbox command
-  // ----------
-  if (req.url?.startsWith("/execute")) {
-    const id = req.url.slice("/execute/".length);
+const app = new Hono();
 
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
+// ----------
+// subscribe
+// ----------
+app.get('/subscribe/:topic', (c) => {
+  const topic = c.req.param('topic');
+  
+  return stream(c, async (stream) => {
+    c.header("Content-Type", "text/event-stream");
+    c.header("Cache-Control", "no-cache");
+    c.header("Connection", "keep-alive");
+
+    pubsub.subscribe(topic, (message) => {
+      stream.write(`data: ${message}\n\n`);
     });
-    req.on("end", () => {
-      if (!body) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("No command provided");
-        return;
-      }
-      sandboxManager
-        .exec(id, body)
-        .then((output) => {
-          res.writeHead(200, { "Content-Type": "text/plain" });
-          res.end(output);
-        })
-        .catch((err) => {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end(`${err}`);
-        });
-    });
-    return;
+  });
+});
+
+
+app.post('/publish/:topic', async (c) => {
+  const topic = c.req.param('topic');
+  const body = await c.req.text();
+  
+  pubsub.publish(topic, body);
+  return c.body(null, 204);
+});
+
+// ----------
+// provision sandbox
+// ----------
+app.post('/provision/:id', async (c) => {
+  const id = c.req.param('id');
+  
+  try {
+    await sandboxManager.provision(id);
+    return c.body(null, 200);
+  } catch (err) {
+    console.error(`Error provisioning sandbox: ${err}`);
+    return c.text(`Error provisioning sandbox: ${err}`, 500);
   }
-  // ----------
-  // create file in sandbox
-  // ----------
-  if (req.url?.startsWith("/writeFile")) {
-    const id = req.url.slice("/writeFile/".length);
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      if (!body) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("No command provided");
-        return;
-      }
-      const { content, filePath } = JSON.parse(body); // ensure body is valid JSON
-      sandboxManager
-        .writeFile(id, filePath, content)
-        .then((output) => {
-          res.writeHead(200, { "Content-Type": "text/plain" });
-          res.end(output);
-        })
-        .catch((err) => {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end(`${err}`);
-        });
-    });
-    return;
+});
+
+app.post('/release/:id', async (c) => {
+  const id = c.req.param('id');
+  
+  try {
+    await sandboxManager.release(id);
+    return c.body(null, 204);
+  } catch (err) {
+    return c.text(`Error releasing sandbox: ${err}`, 500);
   }
-  // -----------------
-  // serve index.html
-  // -----------------
-  if (req.url === "/") {
-    readFile("src/index.html", "utf-8", (err, indexHtml) => {
-      if (err) {
-        res.writeHead(500, { "Content-Type": "text/plain" });
-        res.end("Error reading index.html");
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(indexHtml);
-    });
-    return;
+});
+
+app.post('/execute/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.text();
+  
+  if (!body) {
+    return c.text('No command provided', 400);
   }
-  // ----------
-  // serve 404
-  // ----------
-  res.writeHead(404, { "Content-Type": "text/plain" });
-  res.end("Not Found");
-  return;
-}).listen(3000);
+  try {
+    const output = await sandboxManager.exec(id, body);
+    return c.text(output);
+  } catch (err) {
+    return c.text(`${err}`, 500);
+  }
+});
+
+app.post('/writeFile/:id', async (c) => {
+  const id = c.req.param("id");
+  try {
+    const json = await c.req.json();
+    if (!json) {
+      return c.text("No command provided", 400);
+    }
+    const { content, filePath } = json;
+    const output = await sandboxManager.writeFile(id, filePath, content);
+    return c.text(output);
+  } catch (err) {
+    return c.text(`${err}`, 500);
+  }
+});
+
+app.get("/", async (c) => {
+  const content = await readFile("src/index.html", "utf-8");
+  return c.html(content);
+});
+
+app.notFound((c) => c.text('Not Found', 404));
+
+
+serve({ ...app, port: 3000 }, (info) => {
+  console.log(`Server running at http://localhost:${info.port}`);
+});
 
 console.log(
-  `Pubsub server running on :3000
+  `Server running on :3000
   curl http://localhost:3000/subscribe/example
   curl http://localhost:3000/publish/example --json '{"message": "Hello, World!"}'
-  `
+  curl http://localhost:3000/provision/example
+  curl http://localhost:3000/execute/example --data 'echo Hello'
+  curl http://localhost:3000/writeFile/example --json '{"filePath": "/tmp/test.txt", "content": "Hello, World!"}'
+`
 );
-
 
 // close everything on Ctrl+C
 process.on("SIGINT", async () => {
   console.log("Shutting down...");
-  server.close();
   await sandboxManager.releaseAll();
   console.log("All sandboxes released");
   process.exit(0);
-} );
+});
