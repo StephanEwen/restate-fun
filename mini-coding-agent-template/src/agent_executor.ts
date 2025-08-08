@@ -7,6 +7,9 @@ import { AgentTask, StepInput, StepResult } from "./types";
 import { preparePlan, loopAgent } from "./plan";
 import { sandbox } from "./sandbox";
 
+/**
+ * The agent_executor service runs the workflow for a given task
+ */
 export const agentExecutor = restate.service({
   name: "agent_executor",
   handlers: {
@@ -116,9 +119,9 @@ export const agentExecutor = restate.service({
             stepResults.push(await stepPromise);
           } catch (error) {
             const failure = error as TerminalError;
-            agent.taskFailed({
+            agent.taskComplete({
               taskId,
-              message: `Failed: ${failure.message}`,
+              message: `Task failed with error: ${failure.message}`,
             });
             resourcesToClean.forEach((fn) => fn());
             throw failure;

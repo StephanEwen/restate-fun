@@ -149,7 +149,7 @@ export async function loopAgent(
 
     const { calls, messages, finished } = await restate.run(
       `execute ${step.title} iteration ${i + 1}`,
-      () => streamModel(abortSignal, history, step, taskId, topic),
+      () => streamModel(abortSignal, history, step.id, taskId, topic),
       { maxRetryAttempts: 3 }
     );
 
@@ -220,7 +220,7 @@ export async function loopAgent(
 async function streamModel(
   abortSignal: AbortSignal,
   history: CoreMessage[],
-  step: PlanStep,
+  stepId: string,
   taskId: string,
   topic: string
 ) {
@@ -231,22 +231,15 @@ async function streamModel(
     tools: TOOLS,
   });
 
-  // Stream the text the user
+  const streamToUi = browserStream(abortSignal, topic, taskId, stepId);
+
+  await streamToUi(" >>> Begin LLM response <<<");
+
   for await (const textPart of textStream) {
-    await fetch(`http://localhost:3000/publish/${topic}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        taskId,
-        stepId: step.id,
-        message: textPart,
-        topic,
-      }),
-      signal: abortSignal,
-    });
+    await streamToUi(textPart);
   }
+
+  await streamToUi(" >>> End LLM response <<<");
 
   const { messages } = await response;
   const calls = await toolCalls;
@@ -296,4 +289,22 @@ function lastMessageContent(messages: CoreMessage[]): string {
       : "<No text in last message>";
   }
   return "<Last message content is not text>";
+}
+
+function browserStream(abortSignal: AbortSignal, topic: string, taskId: string, stepId: string): (nextText: string) => Promise<void> {
+  return async (message: string) => {
+    await fetch(`http://localhost:3000/publish/${topic}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        taskId,
+        stepId,
+        message,
+        topic,
+      }),
+      signal: abortSignal,
+    });
+  };
 }

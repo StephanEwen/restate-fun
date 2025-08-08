@@ -16,9 +16,13 @@ type Artifacts = {
 type State = Artifacts & {
     messages: Entry[],
     currentTaskId: restate.InvocationId | null
-    // more to come
+    // add more state here as needed
 } 
 
+/**
+ * The agent object is the orchestrator that receives messages from the user,
+ * tracks the state of the agent, and kicks off workflows.
+ */
 export const agent = restate.object({
   name: "agent",
   handlers: {
@@ -33,17 +37,22 @@ export const agent = restate.object({
         output: serde.zod(z.void()),
       },
       async (restate: restate.ObjectContext<State>, message) => {
-        // store message
+        // get the current messages
         const messages = (await restate.get("messages")) ?? [];
-        messages.push({ role: "user", message });
-        restate.set("messages", messages);
 
-        // abort ongoing task
+        // abort ongoing task, if there is one
         const ongoingTask = await restate.get("currentTaskId");
         if (ongoingTask) {
           await cancelTask(restate, ongoingTask, { seconds: 30 });
           restate.clear("currentTaskId");
+          messages.push({
+            role: "agent",
+            message: "The ongoing task was cancelled due to a new user message"
+          });
         }
+
+        messages.push({ role: "user", message });
+        restate.set("messages", messages);
 
         const task: AgentTask = {
           agentId: restate.key,
@@ -52,11 +61,12 @@ export const agent = restate.object({
           maxIterations: 10,
         };
 
+        // kick off the agent workflow for the prompt
         const handle = restate
           .serviceSendClient<AgentExecutor>({ name: "agent_executor" })
           .runTask(task, opts({ idempotencyKey: restate.rand.uuidv4() }));
-        // note that the idempotency key is not actually needed for idmepotency, but it is a
-        // current limitation that re-attaching to handlers only works when an idempotency key is present
+            // note that the idempotency key is not actually needed for idmepotency, but it is a
+            // current limitation that re-attaching to handlers only works when an idempotency key is present
 
         const invocationId = await handle.invocationId;
         restate.set("currentTaskId", invocationId);
@@ -65,19 +75,22 @@ export const agent = restate.object({
       }
     ),
 
+    /**
+     * Handler for when a task is complete, called by the agent_executor service.
+     */
     taskComplete: restate.createObjectHandler(
       {
         // we don't define a schema here, to show you can also use just TS type
         // system, but then you don't get runtime type checking
 
-        ingressPrivate: true, // not part of public API
+        ingressPrivate: true, // not part of public API, only callable from other Restate services
       },
       async (
         restate: restate.ObjectContext<State>,
         req: { message: string; taskId: string }
       ) => {
-        // we double check that this was not received just the moment sent a
-        // cancellation and has been subsumed by a new task
+        // we double check that this was not received after we sent a
+        // cancellation and started a new new task
         const ongoingTask = await restate.get("currentTaskId");
         if (ongoingTask !== req.taskId) {
           return;
@@ -95,43 +108,15 @@ export const agent = restate.object({
       }
     ),
 
-    taskFailed: restate.createObjectHandler(
-      {
-        // we don't define a schema here, to show you can also use just TS type
-        // system, but then you don't get runtime type checking
-
-        ingressPrivate: true, // not part of public API
-      },
-      async (
-        restate: restate.ObjectContext<State>,
-        req: { message: string; taskId: string }
-      ) => {
-        // we double check that this was not received just the moment sent a
-        // cancellation and has been subsumed by a new task
-        const ongoingTask = await restate.get("currentTaskId");
-        if (ongoingTask !== req.taskId) {
-          return;
-        }
-        restate.clear("currentTaskId");
-
-        const messages = (await restate.get("messages"))!;
-        messages.push({ role: "agent", message: req.message });
-        restate.set("messages", messages);
-
-        await restate.run("notify task done", () => {
-          // make some API call, if necessary
-          console.log(" Task complete!");
-        });
-      }
-    ),
-
+    /**
+     * This handler receives the intermediate results of an ongoing task
+     */
     addUpdate: restate.createObjectHandler(
       {
         input: serde.zod(
           z.object({ taskId: z.string(), entries: z.array(Entry) })
         ),
         ingressPrivate: true, // not part of public API
-        journalRetention: { days: 0 }, // no need to keep a history of this handler
       },
       async (restate: restate.ObjectContext<State>, { taskId, entries }) => {
         // we double check that this was not a message enqueued by a handler that
@@ -151,25 +136,29 @@ export const agent = restate.object({
     getMessages: restate.createObjectSharedHandler(
       {
         input: restate.serde.empty,
-        output: jsonPassThroughSerde, // pass binary through, but declare as JSON
+        output: jsonPassThroughSerde, // advanced patter: pass binary through, but declare as JSON
         journalRetention: { days: 0 }, // no need to keep a history of this handler
       },
       async (restate: restate.ObjectSharedContext) => {
-        // we just pass the bytes back, no need to parse JSON and the re-encode JSON
+        // we get the state as bytes and pass the bytes back
+        // no need to parse and then re-encode JSON
         return await restate.get("messages", binarySerDe);
       }
     ),
   },
   options: {
     // default retention, unless overridden at the handler level
-    journalRetention: { days: 1 },
+    // most methods are simple and don't need to be retained for observability
+    journalRetention: { days: 0 },
     idempotencyRetention: { days: 1 },
   },
 });
 
 export type Agent = typeof agent;
 
-
+// ----------------------------
+// Helper functions
+// ----------------------------
 
 async function cancelTask(
         ctx: restate.Context,
@@ -193,7 +182,7 @@ async function cancelTask(
             ctx.console.warn(`Cancelled agent task taking longer to complete than ${JSON.stringify(timeout)}`)
             return;
         }
-
+        // otherwise, re-throw the error
         throw e;
     }
 }

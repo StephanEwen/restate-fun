@@ -10,6 +10,10 @@ export type AcquireSandboxResponse = {
   sandboxUrl: string;
 };
 
+/**
+ * A placeholder for the sandbox service.
+ * Does nothing and simply returns a sandboxId and sandboxUrl.
+ */
 export const sandbox = service({
   name: "sandbox",
   description:
