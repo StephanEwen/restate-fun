@@ -1,5 +1,22 @@
-# Hello world - TypeScript example
+# Interruptible Coding Agent Mock
 
-Sample project configuration of a Restate service using the TypeScript SDK.
+A simple demo illustrating how to build an interruptible coding agent using Restate and TypeScript.
 
-Have a look at the [TypeScript Quickstart guide](https://docs.restate.dev/get_started/quickstart?sdk=ts) for more information on how to use this template.
+## How to run it
+
+Start the service
+
+```bash
+npm run dev
+```
+
+In a separate terminal, start the web interface:
+
+```bash
+npm run ui
+```
+
+Run Restate Server and use the Restate UI (at `localhost:9070`) to register the application (running at `http://localhost:9080`)
+
+
+Open your browser and navigate to `http://localhost:3000` for the mock agent UI.
