@@ -1,6 +1,5 @@
 
-import { Context, service } from "@restatedev/restate-sdk";
-import { sandboxManager } from "./sandbox_toy";
+import { Context, service, TerminalError } from "@restatedev/restate-sdk";
 
 export type AcquireSandboxRequest = {
   agentId: string;
@@ -28,13 +27,31 @@ export const sandbox = service({
       // Implement your lease logic here.
       const sandboxId = ctx.rand.uuidv4();
 
-      await ctx.run("provision", async () => {
-        await sandboxManager.provision(sandboxId);
-      });
+      await ctx.run(
+        "provision",
+        async () => {
+          const res = await fetch(
+            `http://localhost:3000/provision/${sandboxId}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({}),
+            }
+          );
+          if (!res.ok) {
+            throw new Error(
+              `Failed to provision sandbox: ${res.statusText}`
+            );
+          }
+        },
+        { maxRetryAttempts: 5 }
+      );
 
       return {
         sandboxId,
-        sandboxUrl: `https://example.com/sandbox/${sandboxId}`,
+        sandboxUrl: `http://localhost:3000/execute/${sandboxId}`,
       };
     },
 
@@ -42,7 +59,24 @@ export const sandbox = service({
       ctx: Context,
       req: { sandboxId: string }
     ): Promise<void> => {
-      await sandboxManager.release(req.sandboxId);
+      // This is a placeholder for the release handler.
+      // Implement your release logic here.
+      const { sandboxId } = req;
+
+      await ctx.run("release", async () => {
+        const res = await fetch(`http://localhost:3000/release/${sandboxId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
+        
+        if (!res.ok) {
+          throw new TerminalError(
+            `Failed to release sandbox: ${res.statusText}`
+          );
+        }
+      });
     },
   },
   options: {

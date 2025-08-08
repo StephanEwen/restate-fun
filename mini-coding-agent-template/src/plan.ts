@@ -116,9 +116,6 @@ The AI will execute each step exactly as instructed, so be thorough and precise.
   return plan.steps;
 }
 
-import { toySandboxRPC } from "./sandbox_toy";
-
-
 /**
  * Executes a PlanStep.
  * This function executes a main coding loop, which involves calling the LLM to generate responses or tool calls.
@@ -191,7 +188,6 @@ export async function agentLoop(
   ];
 
 
-  const sandboxRpc = toySandboxRPC(sandboxId);
 
   for (let i = 0; i < 25; i++) {
     // -----------------------------------------------------
@@ -219,7 +215,19 @@ export async function agentLoop(
       if (call.toolName === "executeCommand") {
         const { command } = call.args;
         const result = await restate.run("execute command", () =>
-          sandboxRpc.exec(command)
+          fetch(`http://localhost:3000/execute/${sandboxId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "text/plain",
+            },
+            body: command,
+            signal: abortSignal,
+          }).then((res) => {
+            if (!res.ok) {
+              return `Command failed with status ${res.status}`;
+            }
+            return res.text();
+          })
         );
         const content: ToolResultPart = {
           type: "tool-result",
