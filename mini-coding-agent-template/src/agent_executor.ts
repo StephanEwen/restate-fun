@@ -6,6 +6,7 @@ import { type Agent } from "./agent";
 import { AgentTask, StepInput, StepResult } from "./types";
 import { preparePlan, loopAgent } from "./plan";
 import { sandbox } from "./sandbox";
+import { rethrowIfNotTerminal } from "./utils";
 
 /**
  * The agent_executor service runs the workflow for a given task
@@ -31,27 +32,6 @@ export const agentExecutor = restate.service({
           task.agentId
         );
 
-        // First, let's create a plan of how to approach the task.
-        // We will use the LLM to generate a plan based on the task description.
-        // We store the plan durably in the Restate journal,
-        // because we will acquire resources for each step, and we want to make sure that
-        // we can clean them up if the task fails or is canceled.
-
-        const plan = await restate.run(
-          "compute a plan",
-          () => preparePlan({ task, abortSignal }),
-          { maxRetryAttempts: 3 }
-        );
-
-        // notify the agent that we have a plan
-        agent.addUpdate({
-          taskId,
-          entries: plan.map((step) => ({
-            role: "agent",
-            message: `Step ${step.id}: ${step.title}`,
-          })),
-        });
-
         // here is the place where we can setup various resources
         // like:
         // - an S3 bucket and presigned URLs for storing files,
@@ -66,77 +46,115 @@ export const agentExecutor = restate.service({
 
         const resourcesToClean = [];
 
-        // In this example, we will use a sandbox environment but you can imagine others.
+        try {
+          // First, let's create a plan of how to approach the task.
+          // We will use the LLM to generate a plan based on the task description.
+          // We store the plan durably in the Restate journal,
+          // because we will acquire resources for each step, and we want to make sure that
+          // we can clean them up if the task fails or is canceled.
 
-        const sandboxClient = restate.serviceClient(sandbox);
-        const { sandboxId, sandboxUrl } = await sandboxClient.acquire({
-          agentId: task.agentId,
-        });
+          const plan = await restate.run(
+            "compute a plan",
+            () => preparePlan({ task, abortSignal }),
+            { maxRetryAttempts: 3 }
+          );
 
-        // This is a cleanup saga, we will release all these resources later.
-        resourcesToClean.push(() => sandboxClient.release({ sandboxId }));
-
-        const stepResults: string[] = [];
-        
-        for (const step of plan) {
-          // notify the agent that we are executing the step
+          // notify the agent that we have a plan
           agent.addUpdate({
             taskId,
-            entries: [
-              {
-                role: "agent",
-                message: `Executing step ${step.id}: ${step.title}`,
-              },
-            ],
+            entries: plan.map((step) => ({
+              role: "agent",
+              message: `Step ${step.id}: ${step.title}`,
+            })),
           });
 
-          // Add here any addtional stateful resource, like a provisioned db, a browser session, etc.
-          const stepInput = {
-            taskId,
-            stepId: step.id,
-            task,
-            step,
-            sandboxUrl,
-            sandboxId,
-            topic: `${task.agentId}`, // <-- topic for step messages
-            s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
-            tempDirectory: `task-${taskId}-step-${step.id}`,
-            planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
-            stepResults, // <-- pass previous step results to the next step
-          } satisfies StepInput;
+          // In this example, we will use a sandbox environment but you can imagine others.
 
-          // actually spawn the step execution
-          // we use a service client to call the executePlanStep service handler
-          // which will run the step in a separate context.
-          const stepPromise = restate
-            .serviceClient(agentExecutor)
-            .executePlanStep(stepInput)
-            .orTimeout({ minutes: 5 });
+          const sandboxClient = restate.serviceClient(sandbox);
+          const { sandboxId, sandboxUrl } = await sandboxClient.acquire({
+            agentId: task.agentId,
+          });
 
-          try {
+          // This is a cleanup saga, we will release all these resources later.
+          resourcesToClean.push(() => sandboxClient.release({ sandboxId }));
+
+          const stepResults: string[] = [];
+          
+          for (const step of plan) {
+            // notify the agent that we are executing the step
+            agent.addUpdate({
+              taskId,
+              entries: [
+                {
+                  role: "agent",
+                  message: `Executing step ${step.id}: ${step.title}`,
+                },
+              ],
+            });
+
+            // Add here any addtional stateful resource, like a provisioned db, a browser session, etc.
+            const stepInput = {
+              taskId,
+              stepId: step.id,
+              task,
+              step,
+              sandboxUrl,
+              sandboxId,
+              topic: `${task.agentId}`, // <-- topic for step messages
+              s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,
+              tempDirectory: `task-${taskId}-step-${step.id}`,
+              planetScaleUrl: `https://db.example.com/task-${taskId}/step-${step.id}`,
+              stepResults, // <-- pass previous step results to the next step
+            } satisfies StepInput;
+
+            // the actual step execution (as an agent loop)
+            // this could be inline here as `stepPromise = loopAgent(restate, stepInput)`
+            // but move it to a separate handler, partially for demo purposes (to show how
+            // nested handlers are also automatically cancelled when parent is cancelled),
+            // but also because it can be a useful pattern to reduce the retry scope on error (a new
+            // handler starts a new journal, think like a sub-workflow)
+
+            const stepResult = await restate
+              .serviceClient(agentExecutor)
+              .executePlanStep(stepInput);
+
+            // optionally add `.orTimeout({ minutes: 5 });`
+
             // wait for this step to complete
             // If our parent Agent requests a cancelation, the line below will throw a TerminalError
-            stepResults.push(await stepPromise);
-          } catch (error) {
-            const failure = error as TerminalError;
-            agent.taskComplete({
+            stepResults.push(stepResult);
+            agent.addUpdate({
               taskId,
-              message: `Task failed with error: ${failure.message}`,
+              entries: [
+                { role: "agent", message: `Step ${step.id} completed: ${stepResult}` },
+              ],
             });
-            resourcesToClean.forEach((fn) => fn());
-            throw failure;
+            // move on to the next step!
           }
-          // move on to the next step!
-        }
 
-        // notify the agent that the task is done
-        resourcesToClean.forEach((fn) => fn());
-        agent.taskComplete({ taskId, message: "finished" });
+          // notify the agent that the task is done
+          resourcesToClean.forEach((fn) => fn());
+          agent.taskComplete({ taskId, message: "finished" });
+
+        } catch (error) {
+          // non terminal errors are rethrown, so that we don't clean up resources
+          // because they lead to retries
+          rethrowIfNotTerminal(error);
+
+          const failure = error as TerminalError;
+          agent.taskComplete({
+            taskId,
+            message: `Task failed with error: ${failure.message}`,
+          });
+          resourcesToClean.forEach((fn) => fn());
+          throw failure;
+        }
       }
     ),
 
     /**
-     * Executes a single step of the plan.
+     * Executes a single step of the plan, here as a separate service
+     * handler, to get its own local journal and retry scope
      */
     executePlanStep: restate.createServiceHandler(
       { ingressPrivate: true },

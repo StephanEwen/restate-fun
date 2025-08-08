@@ -39,4 +39,8 @@ export const sandbox = service({
       // Implement your release logic here.
     },
   },
+  options: {
+    journalRetention: { hours: 1 },
+    idempotencyRetention: { hours: 1 }
+  },
 });

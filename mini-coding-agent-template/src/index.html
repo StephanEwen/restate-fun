@@ -2,48 +2,239 @@
 <html>
 
 <head>
-    <title>Example</title>
+    <title>AI Agent Chat</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: Arial, sans-serif;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
-        h1 {
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+            padding: 20px;
             color: #333;
         }
 
-        form {
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+            font-weight: 300;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .form-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 24px;
             margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .form-section h2 {
+            color: #495057;
+            font-size: 1.1rem;
+            font-weight: 500;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .form-section h2::before {
+            content: "👤";
+            font-size: 1rem;
+        }
+
+        .form-section:nth-child(2) h2::before {
+            content: "💬";
+        }
+
+        .input-group {
+            margin-bottom: 0;
         }
 
         input[type="text"] {
-            padding: 10px;
-            width: 300px;
-            margin-right: 10px;
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            transition: all 0.3s ease;
+            background: white;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+
+        input[type="text"]::placeholder {
+            color: #adb5bd;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 16px;
+            align-items: end;
+        }
+
+        .form-row .input-group {
+            flex: 1;
+        }
+
+        .button-container {
+            flex-shrink: 0;
         }
 
         button {
-            padding: 10px 15px;
-            background-color: #007bff;
+            background: #3498db;
             color: white;
             border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 500;
             cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            white-space: nowrap;
         }
 
         button:hover {
-            background-color: #0056b3;
+            background: #2980b9;
         }
 
-        div {
-            margin: 5px 0;
+        button:active {
+            transform: translateY(0);
+        }
+
+        .divider {
+            height: 1px;
+            background: #e9ecef;
+            margin: 30px 0;
+        }
+
+        .output-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .output-section h3 {
+            color: #495057;
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .output-section h3::before {
+            content: "📝";
+            font-size: 1.1rem;
         }
 
         textarea {
-            width: 100vw;
-            height: 100vh;
-            box-sizing: border-box;
-            min-height: 100vh;
-            overflow-y: scroll;
+            width: 100%;
+            height: 400px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 20px;
+            font-size: 0.95rem;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            line-height: 1.6;
+            resize: vertical;
+            background: white;
+            transition: border-color 0.3s ease;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .status {
+            text-align: center;
+            padding: 10px;
+            margin-top: 15px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .form-section {
+                padding: 20px;
+            }
+
+            .form-row {
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .button-container {
+                align-self: stretch;
+            }
+
+            button {
+                width: 100%;
+            }
         }
     </style>
     <meta charset="UTF-8">
@@ -51,10 +242,42 @@
 </head>
 
 <body>
-    <h1>Example</h1>
-    <script>
-        function subscribe() {
+    <div class="container">
+        <div class="header">
+        </div>
+        
+        <div class="content">
+            <form onsubmit="event.preventDefault();">
+                <div class="form-section">
+                    <h2>Agent Id</h2>
+                    <div class="form-row">
+                        <div class="input-group">
+                            <input type="text" id="agentId" placeholder="Enter agent ID (e.g., bob)" required>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="prompt" placeholder="Ask your agent anything..." required>
+                        </div>
+                        <div class="button-container">
+                            <button onclick="subscribe()">Start</button>
+                        </div>
+                    </div>
+                </div>
 
+                <div class="divider"></div>
+
+                <div class="output-section">
+                    <h3>Agent Response</h3>
+                    <textarea id="message" placeholder="Agent responses will appear here..."></textarea>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let currentAgentId = null;
+
+        function subscribe() {
             const prompt = document.getElementById("prompt").value;
             const agentId = document.getElementById("agentId").value;
 
@@ -70,26 +293,33 @@
 
             const textarea = document.getElementById("message");
 
-            const eventSource = new EventSource("/subscribe/" + agentId);
+            // Only create new EventSource if it doesn't exist or if agentId changed
+            if (!eventSource || currentAgentId !== agentId) {
+                // Close existing EventSource if it exists
+                if (eventSource) {
+                    eventSource.close();
+                }
+                
+                eventSource = new EventSource("/subscribe/" + agentId);
+                currentAgentId = agentId;
 
-            eventSource.onmessage = function (event) {
-                const data = JSON.parse(event.data);
-                const content = textarea.value;
-                textarea.value = content ? content + " " + data.message : data.message;
-                console.log(data);
-            };
+                eventSource.onopen = function() {
+                    console.log("Connected to agent:", agentId);
+                };
+
+                eventSource.onmessage = function (event) {
+                    const data = JSON.parse(event.data);
+                    const content = textarea.value;
+                    textarea.value = content ? content + " " + data.message : data.message;
+                    textarea.scrollTop = textarea.scrollHeight;
+                    console.log(data);
+                };
+
+                eventSource.onerror = function() {
+                    console.log("Connection lost");
+                };
+            }
         }
-
     </script>
-    <form onsubmit="event.preventDefault();">
-        <h2>Who are you</h2>
-        <input type="text" id="agentId" placeholder="bob" required>
-        <h2>How can I help you?</h2>
-        <input type="text" id="prompt"
-            placeholder="Build me a factorial function in Typescript without using recursion or loop." required>
-        <button onclick="subscribe()">Subscribe</button>
-        <hr>
-        <textarea id="message" placeholder=""></textarea>
-    </form>
 </body>
 </html>

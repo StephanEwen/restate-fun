@@ -239,13 +239,11 @@ async function streamModel(
 
   const streamToUi = browserStream(abortSignal, topic, stepId);
 
-  await streamToUi("\n\n >>>>>>>> Begin LLM response <<<<<<<<\n\n");
-
   for await (const textPart of textStream) {
     await streamToUi(textPart);
   }
 
-  await streamToUi("\n\n >>>>>>>>> End LLM response <<<<<<<<<\n\n");
+  await streamToUi("\n ------------------------------------- \n");
 
   const { messages } = await response;
   const calls = await toolCalls;
@@ -273,7 +271,7 @@ async function streamStructuredModel<T>(
     model: openai("gpt-4o", { structuredOutputs: true }),
     schema,
     messages: history,
-    abortSignal,
+    abortSignal
   });
 
   const streamToUi = browserStream(abortSignal, topic, stepId);
@@ -328,18 +326,27 @@ function lastMessageContent(messages: CoreMessage[]): string {
 
 function browserStream(abortSignal: AbortSignal, topic: string, stepId: string): (nextText: string) => Promise<void> {
   return async (message: string) => {
-    await fetch(`http://localhost:3000/publish/${topic}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        taskId: "n/a",
-        stepId,
-        message,
-        topic,
-      }),
-      signal: abortSignal,
-    });
+    // do a few local retries, but never let an error bubble up to not
+    // fail the step just if this stream fails
+    for (let i = 0; i < 3; i++) {
+      try {
+        await fetch(`http://localhost:3000/publish/${topic}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            taskId: "n/a",
+            stepId,
+            message,
+            topic,
+          }),
+          signal: abortSignal,
+        });
+        return;
+      } catch (error) {
+        // ignore
+      }
+    }
   };
 }
