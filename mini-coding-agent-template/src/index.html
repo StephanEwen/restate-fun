@@ -291,7 +291,7 @@
     </div>
 
     <script>
-        let eventSource = null;
+        let ws = null;
         let currentAgentId = null;
         
         function subscribe() {
@@ -310,31 +310,29 @@
 
             const textarea = document.getElementById("message");
 
-            // Only create new EventSource if it doesn't exist or if agentId changed
-            if (!eventSource || currentAgentId !== agentId) {
-                // Close existing EventSource if it exists
-                if (eventSource) {
-                    eventSource.close();
+            // Only create new WebSocket if it doesn't exist or if agentId changed
+            if (!ws || currentAgentId !== agentId) {
+                // Close existing WebSocket if it exists
+                if (ws) {
+                    ws.close();
                 }
-                
-                eventSource = new EventSource("/subscribe/" + agentId);
-                currentAgentId = agentId;
-
-                eventSource.onopen = function() {
-                    console.log("Connected to agent:", agentId);
+                // client.js
+                ws = new WebSocket('ws://localhost:3000/ws/' + agentId, 'echo-protocol');
+                ws.onopen = () => {
+                    console.log('Connected to server');
                 };
-
-                eventSource.onmessage = function (event) {
-                    const data = JSON.parse(event.data);
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+                ws.onmessage = (event) => {
+                    const { step, message } = JSON.parse(event.data);
+                    
                     const content = textarea.value;
-                    textarea.value = content ? content + " " + data.message : data.message;
+                    textarea.value = content ? content + " " + message : message;
                     textarea.scrollTop = textarea.scrollHeight;
-                    console.log(data);
+                    console.log(`Server says: ${message}`)
                 };
-
-                eventSource.onerror = function() {
-                    console.log("Connection lost");
-                };
+                currentAgentId = agentId;
             }
         }
             
@@ -349,9 +347,9 @@
                 console.error("Error:", error);
             });
 
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
+            if (ws) {
+                ws.close();
+                ws = null;
                 currentAgentId = null;
             }
         }

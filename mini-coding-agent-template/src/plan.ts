@@ -22,9 +22,11 @@ const TOOLS = {
     description: `Executes a non-interactive shell command on the Ubuntu Linux environment. 
 This is your primary tool for interacting with the file system, managing dependencies, and running processes.
 - Use for commands like 'ls -R', 'mkdir -p my-dir', 'npm install', 'cat file.txt'.
-- To write or create a file, use 'echo "file content" > path/to/file.txt'.
 - The command must not require user input.
-- The tool returns the combined stdout and stderr. Check the output carefully for errors.`,
+- Each command is executed by a newly created SSH session and is sessionless, meaning it does not maintain state between calls.
+- But your entire command in a single string, instead of breaking it into multiple parts. For example: 'cd dist && cat app.js'.
+- Use this for tasks like checking versions, creating directories, installing packages, or running scripts.
+`,
   },
   createFile: {
     parameters: z.object({

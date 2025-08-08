@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { serve } from "@hono/node-server";
 import { readFile } from "fs/promises";
+import { createNodeWebSocket } from "@hono/node-ws";
 
 // -------------------------------------------------------------------------------------
 // Pubsub
@@ -131,9 +132,28 @@ export const pubsub = new Pubsub();
 
 const app = new Hono();
 
-// ----------
-// subscribe
-// ----------
+const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+
+app.get(
+  '/ws/:topic',
+  upgradeWebSocket((c) => {
+    const topic = c.req.param('topic');
+    return {
+      onOpen: (_, ws) => {
+        pubsub.subscribe(topic, (message) => {
+          ws.send(message);
+        });
+      },
+      onClose: () => {
+        console.log("Client disconnected");
+      },
+      onError: (err) => {
+        console.error("WebSocket error", err);
+      },
+    };
+  })
+)
+
 app.get('/subscribe/:topic', (c) => {
   const topic = c.req.param('topic');
   
@@ -148,7 +168,6 @@ app.get('/subscribe/:topic', (c) => {
   });
 });
 
-
 app.post('/publish/:topic', async (c) => {
   const topic = c.req.param('topic');
   const body = await c.req.text();
@@ -157,9 +176,6 @@ app.post('/publish/:topic', async (c) => {
   return c.body(null, 204);
 });
 
-// ----------
-// provision sandbox
-// ----------
 app.post('/provision/:id', async (c) => {
   const id = c.req.param('id');
   
@@ -201,7 +217,7 @@ app.post('/execute/:id', async (c) => {
 app.post('/writeFile/:id', async (c) => {
   const id = c.req.param("id");
   try {
-    const json = await c.req.json();
+    const json = await c.req.json<{ content: string; filePath: string }>();
     if (!json) {
       return c.text("No command provided", 400);
     }
@@ -221,9 +237,11 @@ app.get("/", async (c) => {
 app.notFound((c) => c.text('Not Found', 404));
 
 
-serve({ ...app, port: 3000 }, (info) => {
+const server = serve({ ...app, port: 3000 }, (info) => {
   console.log(`Server running at http://localhost:${info.port}`);
 });
+  
+injectWebSocket(server);
 
 console.log(
   `Server running on :3000
