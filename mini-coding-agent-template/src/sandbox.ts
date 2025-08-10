@@ -1,7 +1,6 @@
 
 import { Context, service, TerminalError } from "@restatedev/restate-sdk";
-import { hc } from 'hono/client'
-import type { App } from "./ui";
+import { api } from "./utils";
 
 export type AcquireSandboxRequest = {
   agentId: string;
@@ -9,16 +8,8 @@ export type AcquireSandboxRequest = {
 
 export type AcquireSandboxResponse = {
   sandboxId: string;
-  sandboxUrl: string;
 };
 
-// an hono RPC client to talk to the UI in a type safe way
-const sandboxAPI = hc<App>("http://localhost:3000");
-
-/**
- * A placeholder for the sandbox service.
- * Does nothing and simply returns a sandboxId and sandboxUrl.
- */
 export const sandbox = service({
   name: "sandbox",
   description:
@@ -28,47 +19,35 @@ export const sandbox = service({
       ctx: Context,
       req: AcquireSandboxRequest
     ): Promise<AcquireSandboxResponse> => {
-      // This is a placeholder for the lease handler.
-      // Implement your lease logic here.
       const sandboxId = ctx.rand.uuidv4();
-      
-      const { id: callback, promise } = ctx.awakeable<{ type: "ok" | "failure" }>();
 
+      // The sandbox provising in this demo is asynchronous.
+      // Our provisioning API will call us back when the sandbox is ready.
+      // In restate this can also be done using an awakeable.
+
+      // 1. create a promise that can be resolved via a callback URL
+      //
+      // we create an awakeable promise with a unique and stable (across retries) ID
+      // Restate provides an API to resolve an awakeable either programmatically or via a callback
+      // to the restate ingress given that ID.
+      // For example,
+      // curl http://localhost:8080/restate/a/<id>/resolve -X POST -d '{"type": "ok"}'
+      // once the awakeable is resolved, the promise will be fulfilled.
+      const { id, promise } = ctx.awakeable<{ type: "ok" | "failure" }>();
+
+      // 2. register the callback URL with the sandbox API
       await ctx.run(
         "provision",
         async () => {
-          const res = await sandboxAPI.provision[":id"][":callback"].$post({
-            param: {
-              id: sandboxId,
-              callback,
-            },
-          });
-          if (!res.ok) {
-            throw new Error("transient error provisioning a sandbox");
-          }
-
-          const state = await res.json();
-
-          switch (state.type) {
-            case "unknown":
-            case "ok":
-            case "starting":
-              return;
-            case "failed": {
-              throw new TerminalError(
-                `Failed to provision a sandbox ${state.error}`
-              );
-            }
-            case "stopped": {
-              throw new TerminalError(
-                `Failed to provision a sandbox, it seems to be stopped already.`
-              );
-            }
+          const state = await api.provision(sandboxId, id);
+          if (state.type === "failed" || state.type === "stopped") {
+            throw new TerminalError(`Failed to provision a sandbox`);
           }
         },
         { maxRetryAttempts: 5 }
       );
-      
+
+      // 3. Wait for the callback to arrive.
       const { type } = await promise.orTimeout({ minutes: 2 });
       if (type !== "ok") {
         throw new TerminalError("could not provision a sandbox");
@@ -76,7 +55,6 @@ export const sandbox = service({
 
       return {
         sandboxId,
-        sandboxUrl: `http://localhost:3000/execute/${sandboxId}`,
       };
     },
 
@@ -85,26 +63,9 @@ export const sandbox = service({
       req: { sandboxId: string }
     ): Promise<void> => {
       const { sandboxId } = req;
+      
+      await api.release(sandboxId);
 
-      await ctx.run(
-        "release",
-        async () => {
-          const res = await fetch(
-            `http://localhost:3000/release/${sandboxId}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-            }
-          );
-
-          if (!res.ok) {
-            throw new Error(`Failed to release sandbox: ${res.statusText}`);
-          }
-        },
-        { maxRetryAttempts: 5 }
-      );
     },
   },
   options: {

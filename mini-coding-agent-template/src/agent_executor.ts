@@ -71,7 +71,7 @@ export const agentExecutor = restate.service({
           // In this example, we will use a sandbox environment but you can imagine others.
 
           const sandboxClient = restate.serviceClient(sandbox);
-          const { sandboxId, sandboxUrl } = await sandboxClient.acquire({
+          const { sandboxId } = await sandboxClient.acquire({
             agentId: task.agentId,
           });
 
@@ -98,7 +98,6 @@ export const agentExecutor = restate.service({
               stepId: step.id,
               task,
               step,
-              sandboxUrl,
               sandboxId,
               topic: `${task.agentId}`, // <-- topic for step messages
               s3prefix: `s3://conversation-store-${restate.rand.uuidv4()}`,

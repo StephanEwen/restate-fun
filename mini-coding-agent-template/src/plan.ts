@@ -1,4 +1,4 @@
-import { type Context } from "@restatedev/restate-sdk";
+import { TerminalError, type Context } from "@restatedev/restate-sdk";
 
 import {
   CoreMessage,
@@ -8,7 +8,7 @@ import {
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
-import { pubsubClient } from "./utils";
+import { api, pubsubClient } from "./utils";
 
 // --------------------------------------------------------
 //  The actual agentic planning and plan step execution
@@ -20,14 +20,28 @@ const TOOLS = {
     parameters: z.object({
       command: z.string().describe("The shell command to execute."),
     }),
-    description: `Executes a non-interactive shell command on the Ubuntu Linux environment. 
-This is your primary tool for interacting with the file system, managing dependencies, and running processes.
+    description: `Executes a non-interactive shell command in an Ubuntu Linux environment. 
+This tool is designed for performing file system operations, managing dependencies, and running processes.
+
+# Usage Guidelines:
 - Use for commands like 'ls -R', 'mkdir -p my-dir', 'npm install', 'cat file.txt'.
-- The command must not require user input.
-- Each command is executed by a newly created SSH session and is sessionless, meaning it does not maintain state between calls.
-- But your entire command in a single string, instead of breaking it into multiple parts. For example: 'cd dist && cat app.js'.
-- Use this for tasks like checking versions, creating directories, installing packages, or running scripts.
-`,
+- Commands must not require user input or interactive prompts.
+- Each command is executed in a stateless, sessionless environment. Ensure the entire operation is encapsulated in a single command string (e.g., 'cd dist && cat app.js').
+- Use this tool for tasks such as:
+  - Checking versions (e.g., 'node -v').
+  - Creating directories or files.
+  - Installing dependencies (e.g., 'npm install').
+  - Running scripts or inspecting file contents.
+- You run as a superuser, so you can perform any operation that requires elevated privileges. Do not use 'sudo' in commands, as it is not necessary.
+
+# Expected Output:
+- Status Code: The exit code of the command (0 for success, non-zero for failure).
+- Output: The standard output of the command.
+- Error: Any error message produced by the command.
+
+# Best Practices:
+- Always validate the output and handle errors appropriately.
+- Be explicit about paths and avoid relying on implicit state (e.g., current working directory).`,
   },
   createFile: {
     parameters: z.object({
@@ -274,34 +288,49 @@ export async function agentLoop(
   return "<I failed to execute this step withn 25 iterations>";
 }
 
-async function writeFileInSandbox(sandboxId: string, args: {filePath: string, content: string}): Promise<string> {
-  const response = await fetch(`http://localhost:3000/writeFile/${sandboxId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to write file: ${response.statusText}`);
+async function writeFileInSandbox(
+  sandboxId: string,
+  args: { filePath: string; content: string }
+): Promise<string> {
+  const res = await api.writeFile(sandboxId, args.filePath, args.content);
+  switch (res.type) {
+    case "starting":
+      throw new TerminalError("Sandbox is still starting, please retry later.");
+    case "failed":
+      throw new TerminalError(`Failed to write file: ${res.error}`);
+    case "unknown":
+      throw new TerminalError("Unknown error occurred while writing file.");
+    case "stopped":
+      throw new TerminalError("Sandbox execution stopped unexpectedly.");
+    case "ok":
+      return "File written successfully.";
   }
-  return response.text();
 }
 
-async function runInSandbox(sandboxId: string, command: string): Promise<string> {
-  const response = await fetch(`http://localhost:3000/execute/${sandboxId}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain",
-      },
-      body: command,
+async function runInSandbox(
+  sandboxId: string,
+  command: string
+): Promise<string> {
+  const res = await api.execute(sandboxId, command);
+  switch (res.type) {
+    case "result": {
+      return `
+      # Status Code
+      ${res.result.statusCode}
+      
+      # Output
+      ${res.result.output}
+
+      # Error
+      ${res.result.error}`;
     }
-  );
-  if (!response.ok) {
-    throw new Error(`Command failed with status ${response.status}`);
+    case "stopped":
+    case "unknown":
+    case "failed":
+      throw new TerminalError(`Sandbox execution failed: ${res.type}`);
+    case "starting":
+      throw new Error("Sandbox is still starting, please retry later.");
   }
-  return response.text();
 }
 
 async function streamModel(

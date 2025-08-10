@@ -39,7 +39,6 @@ export type StepInput = {
   task: AgentTask;
   step: PlanStep;
   s3prefix: string;
-  sandboxUrl: string;
   planetScaleUrl: string;
   tempDirectory: string;
   topic: string;

@@ -105,7 +105,7 @@ class SandboxManager {
   image: string;
   sandboxes: Map<string, SandboxState>;
 
-  constructor(image = "node:22-bullseye") {
+  constructor(image = "debian:latest") {
     this.image = image;
     this.sandboxes = new Map(); // id → container
   }
@@ -144,7 +144,7 @@ class SandboxManager {
           .withCommand(["-c", "while true; do sleep 1000; done"])
           .withPullPolicy({
             shouldPull() {
-              return false;
+              return true;
             },
           })
           .start();
@@ -220,7 +220,7 @@ class SandboxManager {
         error: result.stderr,
       },
     };
-    console.log(`[${id}] $ ${command}\n> ${res}`);
+    console.log(`[${id}] $ ${command}\n>`, res);
     return res;
   }
 
@@ -433,11 +433,10 @@ app
     })
   );
   
-export type App = typeof app;
-
 const server = serve({ ...app, port: 3000 }, (info) => {
   console.log(`Server running at http://localhost:${info.port}`);
 });
+  
 
 injectWebSocket(server);
 
