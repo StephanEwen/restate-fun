@@ -1,15 +1,14 @@
-import { type Context } from "@restatedev/restate-sdk";
+import { TerminalError, type Context } from "@restatedev/restate-sdk";
 
 import {
   CoreMessage,
-  generateObject,
   streamText,
   streamObject,
-  ToolResultPart,
 } from "ai";
 import { AgentTask, PlanStep, StepInput, StepResult } from "./types";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
+import { api, pubsubClient } from "./utils";
 
 // --------------------------------------------------------
 //  The actual agentic planning and plan step execution
@@ -17,23 +16,46 @@ import { z } from "zod";
 
 // A set of tools that the LLM can use to execute the steps
 const TOOLS = {
-  getFileContent: {
-    parameters: z.object({
-      filePath: z.string(),
-    }),
-    description: "Get the content of a file from the remote environment.",
-  },
-  searchCode: {
-    parameters: z.object({
-      query: z.string(),
-    }),
-    description: "Search for code snippets in the remote environment.",
-  },
   executeCommand: {
     parameters: z.object({
-      command: z.string(),
+      command: z.string().describe("The shell command to execute."),
     }),
-    description: "Execute a command in the remote environment.",
+    description: `Executes a non-interactive shell command in an Ubuntu Linux environment. 
+This tool is designed for performing file system operations, managing dependencies, and running processes.
+
+# Usage Guidelines:
+- Use for commands like 'ls -R', 'mkdir -p my-dir', 'npm install', 'cat file.txt'.
+- Commands must not require user input or interactive prompts.
+- Each command is executed in a stateless, sessionless environment. Ensure the entire operation is encapsulated in a single command string (e.g., 'cd dist && cat app.js').
+- Use this tool for tasks such as:
+  - Checking versions (e.g., 'node -v').
+  - Creating directories or files.
+  - Installing dependencies (e.g., 'npm install').
+  - Running scripts or inspecting file contents.
+- You run as a superuser, so you can perform any operation that requires elevated privileges. Do not use 'sudo' in commands, as it is not necessary.
+
+# Expected Output:
+- Status Code: The exit code of the command (0 for success, non-zero for failure).
+- Output: The standard output of the command.
+- Error: Any error message produced by the command.
+
+# Best Practices:
+- Always validate the output and handle errors appropriately.
+- Be explicit about paths and avoid relying on implicit state (e.g., current working directory).`,
+  },
+  createFile: {
+    parameters: z.object({
+      filePath: z
+        .string()
+        .describe(
+          "The full path where the file should be created, e.g., 'src/index.js'."
+        ),
+      content: z.string().describe("The content to write into the file."),
+    }),
+    description: `A high-level tool to create a new file with specified content. 
+This is often more reliable for writing multi-line code than using 'echo' with 'executeCommand'.
+- If the file already exists, it will be completely overwritten.
+- Use this for writing source code, configuration files, or documentation.`,
   },
 };
 
@@ -53,13 +75,43 @@ export async function preparePlan(params: {
 }): Promise<PlanStep[]> {
   const { task, abortSignal } = params;
 
-  const system = `You are an AI assistant that generates a plan for executing a coding task.
-    The task is: ${task.prompt}
-    Please break down the task into steps, such as gathering information, writing code, testing, etc.
-    Describe each step in detail, including the specific prompt to provide to the LLM for further execution of the step,
-    Do not generate more than 5 steps at once.
-    Each step starts as pending.
-    `;
+  const system = `You are an expert coding task planner responsible for breaking down complex programming tasks into executable steps.
+
+# TASK
+${task.prompt}
+
+# EXECUTION ENVIRONMENT
+- Ubuntu Linux environment
+- Git and npm pre-installed
+- All commands must be non-interactive (no user input required)
+- Example: Use 'echo "content" > file.txt' instead of 'nano file.txt'
+
+# PLAN REQUIREMENTS
+1. Generate 3-8 logical steps
+2. Each step must include:
+   - id: A unique identifier (e.g., "step1")
+   - title: A concise title
+   - description: Detailed explanation of what needs to be accomplished
+   - prompt: Specific instructions for the AI to execute this step
+   - status: Always set to "pending"
+
+# STEP CATEGORIES TO CONSIDER
+- Environment assessment (checking versions, file structure)
+- Project setup (creating directories, initializing repos)
+- Dependency management (installing packages)
+- Code development (writing specific components)
+- Testing and validation (verifying functionality)
+- Documentation (adding comments, README files)
+
+# BEST PRACTICES
+- Make steps atomic and focused on one specific outcome
+- Include error handling considerations
+- Ensure logical progression between steps
+- Be explicit about file paths and naming conventions
+- Provide context in each step about its place in the overall task
+
+The AI will execute each step exactly as instructed, so be thorough and precise.
+`;
 
   const messages: CoreMessage[] = [];
   messages.push({
@@ -95,7 +147,6 @@ export async function preparePlan(params: {
   return plan.steps;
 }
 
-
 /**
  * Executes a PlanStep.
  * This function executes a main coding loop, which involves calling the LLM to generate responses or tool calls.
@@ -108,9 +159,9 @@ export async function preparePlan(params: {
  * @param params.topic - The topic for updates related to this step.
  * @returns A promise that resolves to a StepResult containing the step ID and messages generated during execution.
  */
-export async function loopAgent(
+export async function agentLoop(
   restate: Context,
-  { taskId, task, step, topic, stepResults }: StepInput
+  { taskId, task, step, topic, stepResults, sandboxId }: StepInput
 ): Promise<StepResult> {
   console.log(`
     Executing LLM step for: ${task.agentId} with the task ID: ${taskId}
@@ -131,25 +182,43 @@ export async function loopAgent(
   const history: CoreMessage[] = [
     {
       role: "system",
-      content: `You are an AI assistant that executes a coding task step.
-        The step is: ${step.title}
-        The step description is: ${step.description}
-        The step prompt is: ${step.prompt}
-        You will receive updates from the agent about the task progress.
-        Please execute the step and provide the results.
-        If you need to call tools, use the provided tools.
-        The following are the results of the previous steps:
-        ${stepResults.join("\n")}
-        `,
-    },
-    {
-      role: "user",
-      content: task.prompt,
+      content: `
+      You are an AI coding assistant executing a specific step in a larger task.
+      
+      # Environment
+      - Ubuntu machine with git and npm installed
+      - Use only non-interactive bash commands (no 'npm start', 'nano', etc.)
+      - Always check command output for errors and handle them appropriately
+        
+      # The larger task that this step is part of
+      ${task.prompt}
+      
+      # Your task
+      Step: ${step.title}
+      
+      Description: 
+      ${step.description}
+      
+      Prompt:
+      ${step.prompt}
+      
+      # Previous steps results
+      ${stepResults.map((res) => `- ${res}`).join("\n")}
+      
+      # Guidelines
+      1. Think step-by-step and explain your reasoning
+      2. Write clean, well-documented code with error handling
+      3. When using tools, explain why you're using them and what you expect
+      4. If a command fails, analyze the error and try an alternative approach
+      5. Conclude with a clear summary of what you accomplished
+      
+      Always focus on completing the current step successfully before moving on.
+      `,
     },
   ];
 
 
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 25; i++) {
     // -----------------------------------------------------
     // 1. Call the LLM to generate a response or tool calls
     // -----------------------------------------------------
@@ -172,56 +241,96 @@ export async function loopAgent(
     // -----------------------------------------------------
 
     for (const call of calls) {
-      if (call.toolName === "searchCode") {
-        const { query } = call.args;
-        const result = await restate.run("code search", () =>
-          executeCodeSearch(query)
+      if (call.toolName === "createFile") {
+        const result = await restate.run(
+          "create file",
+          () => writeFileInSandbox(sandboxId, call.args),
+          { maxRetryAttempts: 5 }
         );
-        const content: ToolResultPart = {
-          type: "tool-result",
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          result,
-        };
+
         history.push({
           role: "tool",
-          content: [content],
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result,
+            },
+          ],
         });
-      } else if (call.toolName === "getFileContent") {
-        const { filePath } = call.args;
-        const result = await restate.run("get file content", () =>
-          getFileContent(filePath)
-        );
-        const content: ToolResultPart = {
-          type: "tool-result",
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          result,
-        };
-        history.push({
-          role: "tool",
-          content: [content],
-        });
-      } else if (call.toolName === "executeCommand") {
+      }
+
+      if (call.toolName === "executeCommand") {
         const { command } = call.args;
-        const result = await restate.run("execute command", () =>
-          executeCommand(command)
+        
+        const result = await restate.run(
+          "execute command",
+          () => runInSandbox(sandboxId, command),
+          { maxRetryAttempts: 5 }
         );
-        const content: ToolResultPart = {
-          type: "tool-result",
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          result,
-        };
+        
         history.push({
           role: "tool",
-          content: [content],
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result,
+            },
+          ],
         });
       }
     }
   }
 
-  return "<I failed to execute this step>";
+  return "<I failed to execute this step withn 25 iterations>";
+}
+
+async function writeFileInSandbox(
+  sandboxId: string,
+  args: { filePath: string; content: string }
+): Promise<string> {
+  const res = await api.writeFile(sandboxId, args.filePath, args.content);
+  switch (res.type) {
+    case "starting":
+      throw new TerminalError("Sandbox is still starting, please retry later.");
+    case "failed":
+      throw new TerminalError(`Failed to write file: ${res.error}`);
+    case "unknown":
+      throw new TerminalError("Unknown error occurred while writing file.");
+    case "stopped":
+      throw new TerminalError("Sandbox execution stopped unexpectedly.");
+    case "ok":
+      return "File written successfully.";
+  }
+}
+
+async function runInSandbox(
+  sandboxId: string,
+  command: string
+): Promise<string> {
+  const res = await api.execute(sandboxId, command);
+  switch (res.type) {
+    case "result": {
+      return `
+      # Status Code
+      ${res.result.statusCode}
+      
+      # Output
+      ${res.result.output}
+
+      # Error
+      ${res.result.error}`;
+    }
+    case "stopped":
+    case "unknown":
+    case "failed":
+      throw new TerminalError(`Sandbox execution failed: ${res.type}`);
+    case "starting":
+      throw new Error("Sandbox is still starting, please retry later.");
+  }
 }
 
 async function streamModel(
@@ -237,7 +346,7 @@ async function streamModel(
     tools: TOOLS,
   });
 
-  const streamToUi = browserStream(abortSignal, topic, stepId);
+  const streamToUi = await browserStream(topic, stepId);
 
   for await (const textPart of textStream) {
     await streamToUi(textPart);
@@ -274,7 +383,7 @@ async function streamStructuredModel<T>(
     abortSignal
   });
 
-  const streamToUi = browserStream(abortSignal, topic, stepId);
+  const streamToUi = await browserStream(topic, stepId);
 
   await streamToUi("\n\n >>>>>>>> Begin Planning... <<<<<<<<\n\n");
   for await (const textPart of textStream) {
@@ -283,24 +392,6 @@ async function streamStructuredModel<T>(
   await streamToUi("\n\n >>>>>>>>> End Planning... <<<<<<<<<\n\n");
 
   return await object;
-}
-
-async function executeCodeSearch(query: string): Promise<string> {
-  // Here you would implement the logic to search for code snippets in the remote environment
-  // For example, you might use an RPC call to a remote service that retrieves the code snippets.
-  return `Found code snippets for query: ${query}`;
-}
-
-async function getFileContent(filePath: string): Promise<string> {
-  // Here you would implement the logic to fetch the file content from the remote environment
-  // For example, you might use an RPC call to a remote service that retrieves the file content.
-  return `Content of file at path: ${filePath}`;
-}
-
-async function executeCommand(command: string): Promise<string> {
-  // Here you would implement the logic to execute a command in the remote environment
-  // For example, you might use an RPC call to a remote service that executes the command.
-  return `Executed command: ${command}`;
 }
 
 // Utility function to get the last message content
@@ -324,29 +415,29 @@ function lastMessageContent(messages: CoreMessage[]): string {
   return "<Last message content is not text>";
 }
 
-function browserStream(abortSignal: AbortSignal, topic: string, stepId: string): (nextText: string) => Promise<void> {
+async function browserStream(topic: string, stepId: string) {
+  const publisher = await pubsubClient(topic);
+
   return async (message: string) => {
+    
+    const body = {
+      taskId: "n/a",
+      stepId,
+      message,
+      topic,
+    };
+
     // do a few local retries, but never let an error bubble up to not
     // fail the step just if this stream fails
     for (let i = 0; i < 3; i++) {
       try {
-        await fetch(`http://localhost:3000/publish/${topic}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            taskId: "n/a",
-            stepId,
-            message,
-            topic,
-          }),
-          signal: abortSignal,
-        });
-        return;
+        publisher.publish(body);
+        return Promise.resolve();
       } catch (error) {
-        // ignore
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
+
+    return Promise.reject(new Error("Failed to publish message"));
   };
 }
