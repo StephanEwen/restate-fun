@@ -148,6 +148,9 @@ class SandboxManager {
             },
           })
           .start();
+        
+        // run some commands to prepare the container
+        await container.exec(["bash", "-c", "apt-get update"])
 
         const currentState = this.getState(id);
 
