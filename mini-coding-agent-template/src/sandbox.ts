@@ -1,5 +1,7 @@
 
 import { Context, service, TerminalError } from "@restatedev/restate-sdk";
+import { hc } from 'hono/client'
+import type { App } from "./ui";
 
 export type AcquireSandboxRequest = {
   agentId: string;
@@ -9,6 +11,9 @@ export type AcquireSandboxResponse = {
   sandboxId: string;
   sandboxUrl: string;
 };
+
+// an hono RPC client to talk to the UI in a type safe way
+const sandboxAPI = hc<App>("http://localhost:3000");
 
 /**
  * A placeholder for the sandbox service.
@@ -26,26 +31,48 @@ export const sandbox = service({
       // This is a placeholder for the lease handler.
       // Implement your lease logic here.
       const sandboxId = ctx.rand.uuidv4();
+      
+      const { id: callback, promise } = ctx.awakeable<{ type: "ok" | "failure" }>();
 
       await ctx.run(
         "provision",
         async () => {
-          const res = await fetch(
-            `http://localhost:3000/provision/${sandboxId}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({}),
-            }
-          );
+          const res = await sandboxAPI.provision[":id"][":callback"].$post({
+            param: {
+              id: sandboxId,
+              callback,
+            },
+          });
           if (!res.ok) {
-            throw new Error(`Failed to provision sandbox: ${res.statusText}`);
+            throw new Error("transient error provisioning a sandbox");
+          }
+
+          const state = await res.json();
+
+          switch (state.type) {
+            case "unknown":
+            case "ok":
+            case "starting":
+              return;
+            case "failed": {
+              throw new TerminalError(
+                `Failed to provision a sandbox ${state.error}`
+              );
+            }
+            case "stopped": {
+              throw new TerminalError(
+                `Failed to provision a sandbox, it seems to be stopped already.`
+              );
+            }
           }
         },
         { maxRetryAttempts: 5 }
       );
+      
+      const { type } = await promise.orTimeout({ minutes: 2 });
+      if (type !== "ok") {
+        throw new TerminalError("could not provision a sandbox");
+      }
 
       return {
         sandboxId,
