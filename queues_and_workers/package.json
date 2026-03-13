@@ -10,8 +10,9 @@
     "dev": "tsx watch ./src/app.ts"
   },
   "dependencies": {
-    "@restatedev/restate-sdk": "^1.7.2",
-    "@restatedev/restate-sdk-zod": "^1.7.2"
+    "@restatedev/restate-sdk": "^1.11.0",
+    "@restatedev/restate-sdk-zod": "^1.11.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20.14.2",
