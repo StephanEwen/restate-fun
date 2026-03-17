@@ -1,0 +1,21 @@
+{
+  "name": "restate-example-large-value-offload",
+  "version": "0.0.1",
+  "description": "Example util code that transparently offloads large values from a run action to an object store",
+  "main": "app.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc --noEmitOnError",
+    "start": "node ./dist/app.js",
+    "dev": "tsx watch ./src/app.ts"
+  },
+  "dependencies": {
+    "@restatedev/restate-sdk": "^1.11.1",
+    "zod": "^4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5"
+  }
+}
