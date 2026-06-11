@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# Crawler output
+downloads/
+
+# Local Restate server state (created when running `restate-server` here)
+restate-data/
