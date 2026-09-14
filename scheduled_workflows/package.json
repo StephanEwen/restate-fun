@@ -1,0 +1,22 @@
+{
+  "name": "Scheduled workflows example",
+  "version": "0.0.1",
+  "description": "Example on how to build a workflow scheduler in Restate",
+  "main": "app.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc --noEmitOnError",
+    "start": "node ./dist/app.js",
+    "dev": "tsx watch ./src/app.ts",
+    "dev:workflows": "tsx watch ./src/sample_workflows/app.ts"
+  },
+  "dependencies": {
+    "@restatedev/restate-sdk": "^1.17.0",
+    "zod": "^4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5"
+  }
+}

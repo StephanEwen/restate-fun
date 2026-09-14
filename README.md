@@ -46,3 +46,14 @@ state for dedup and req/resp self-calls to preserve the call tree.
 `crawl` handler (claim → durable fetch → save → mark completed → recurse). See
 its [README](./crawler/README.md) for the two-keys design that avoids both
 double-crawling and deadlock.
+
+### [`scheduled_workflows/`](./scheduled_workflows) — A high-cardinality workflow scheduler
+
+A cron-like scheduler that fires recurring workflows per user. Each user is a
+Virtual Object holding their schedules plus a single delayed self-invocation
+armed for the earliest upcoming workflow. Nothing polls or sleeps in a loop, so an
+idle user costs just one row of state and one pending timer, and the design
+scales to as many users as the cluster holds.
+
+**Most interesting file:** [`src/scheduler.ts`](./scheduled_workflows/src/scheduler.ts) —
+the `Scheduler` Virtual Object and its self-arming `driveScheduler` timer.
